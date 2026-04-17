@@ -146,6 +146,7 @@ class VectorStore:
         logger.info("Seeding bootstrap fixes into knowledge base...")
         bootstrap = [
             {
+                "fix_id": "bootstrap_0",
                 "table_fqn": "*.*.public.orders",
                 "failure_category": "null_violation",
                 "problem_description": "NULL values found in customer_id column which should be NOT NULL",
@@ -153,6 +154,7 @@ class VectorStore:
                 "was_successful": "True",
             },
             {
+                "fix_id": "bootstrap_1",
                 "table_fqn": "*.*.public.orders",
                 "failure_category": "range_violation",
                 "problem_description": "Negative amount values found in orders table",
@@ -160,6 +162,7 @@ class VectorStore:
                 "was_successful": "True",
             },
             {
+                "fix_id": "bootstrap_2",
                 "table_fqn": "*.*.public.customers",
                 "failure_category": "uniqueness_violation",
                 "problem_description": "Duplicate email values found in customers table",
@@ -170,6 +173,7 @@ class VectorStore:
                 "was_successful": "True",
             },
             {
+                "fix_id": "bootstrap_3",
                 "table_fqn": "*.*.public.customers",
                 "failure_category": "range_violation",
                 "problem_description": "Invalid age values found — negative or over 150",
@@ -177,6 +181,7 @@ class VectorStore:
                 "was_successful": "True",
             },
             {
+                "fix_id": "bootstrap_4",
                 "table_fqn": "*.*.public.orders",
                 "failure_category": "null_violation",
                 "problem_description": "NULL status values in orders table",
