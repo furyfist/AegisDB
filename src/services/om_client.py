@@ -1,7 +1,10 @@
+import logging
+from base64 import b64encode
+
 import httpx
+
 from src.core.config import settings
 from src.core.models import TableContext, ColumnInfo
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,16 @@ class OpenMetadataClient:
             timeout=10.0,
         )
 
+    @staticmethod
+    def _encode_password(password: str) -> str:
+        """
+        OpenMetadata expects the login password as a Base64 string.
+        If the setting is already stored as `base64:...`, use it as-is.
+        """
+        if password.startswith("base64:"):
+            return password.removeprefix("base64:")
+        return b64encode(password.encode("utf-8")).decode("utf-8")
+
     async def _get_token(self) -> str:
         """Fetch JWT token. Cache it — OM tokens are long-lived."""
         if self._token:
@@ -28,7 +41,7 @@ class OpenMetadataClient:
             "/api/v1/users/login",
             json={
                 "email": settings.om_admin_email,
-                "password": settings.om_admin_password,
+                "password": self._encode_password(settings.om_admin_password),
             },
         )
         resp.raise_for_status()
