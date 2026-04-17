@@ -4,12 +4,15 @@ import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
-from src.api.webhook import router
+from src.api.webhook import router as webhook_router
+from src.api.dashboard import router as dashboard_router
 from src.services.om_client import om_client
 from src.services.event_bus import event_bus
 from src.services.stream_consumer import stream_consumer
 from src.agents.repair import repair_agent
+from src.agents.apply import apply_agent
 from src.db.vector_store import vector_store
+from src.db.audit_log import init_audit_table, close_audit
 from src.core.config import settings
 
 logging.basicConfig(
@@ -18,94 +21,137 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-_consumer_task: asyncio.Task | None = None
-_repair_task: asyncio.Task | None = None
+_tasks: dict[str, asyncio.Task] = {}
+
+
+def _make_task(coro, name: str) -> asyncio.Task:
+    task = asyncio.create_task(coro, name=name)
+    _tasks[name] = task
+    return task
+
+
+def _task_ok(name: str) -> str:
+    t = _tasks.get(name)
+    if t is None:
+        return "not_started"
+    if t.done():
+        exc = t.exception() if not t.cancelled() else None
+        return f"stopped({'error' if exc else 'cancelled'})"
+    return "ok"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _consumer_task, _repair_task
+    logger.info("=" * 60)
+    logger.info("AegisDB starting up")
+    logger.info(f"  DRY_RUN       : {settings.dry_run}")
+    logger.info(f"  POST_VERIFY   : {settings.post_apply_verify}")
+    logger.info(f"  CONFIDENCE_θ  : {settings.confidence_threshold}")
+    logger.info("=" * 60)
 
-    logger.info("AegisDB starting...")
-
-    # Vector store
+    #  1. Vector store (sync, must be first) 
     try:
         vector_store.connect()
         vector_store.seed_bootstrap_fixes()
+        logger.info("[Boot] ChromaDB ready")
     except Exception as e:
-        logger.error(f"ChromaDB init failed: {e}")
+        logger.error(f"[Boot] ChromaDB FAILED: {e}")
 
-    # Redis event bus
+    #  2. Audit table in target DB 
+    try:
+        await init_audit_table()
+        logger.info("[Boot] Audit table ready")
+    except Exception as e:
+        logger.warning(f"[Boot] Audit table unavailable (non-fatal): {e}")
+
+    #  3. Redis event bus 
     try:
         await event_bus.connect()
+        logger.info("[Boot] Event bus ready")
     except Exception as e:
-        logger.warning(f"Event bus unavailable: {e}")
+        logger.warning(f"[Boot] Event bus unavailable: {e}")
 
-    # Diagnosis stream consumer
+    #  4. Diagnosis stream consumer 
     try:
         await stream_consumer.connect()
-        _consumer_task = asyncio.create_task(
-            stream_consumer.start(), name="diagnosis-consumer"
-        )
-        logger.info("Diagnosis stream consumer started")
+        _make_task(stream_consumer.start(), "diagnosis-consumer")
+        logger.info("[Boot] Diagnosis consumer running")
     except Exception as e:
-        logger.warning(f"Diagnosis consumer unavailable: {e}")
+        logger.warning(f"[Boot] Diagnosis consumer unavailable: {e}")
 
-    # Repair agent
+    #  5. Repair agent 
     try:
         await repair_agent.connect()
-        _repair_task = asyncio.create_task(
-            repair_agent.start(), name="repair-agent"
-        )
-        logger.info("Repair agent started")
+        _make_task(repair_agent.start(), "repair-agent")
+        logger.info("[Boot] Repair agent running")
     except Exception as e:
-        logger.warning(f"Repair agent unavailable: {e}")
+        logger.warning(f"[Boot] Repair agent unavailable: {e}")
 
-    logger.info(
-        f"AegisDB ready — DRY_RUN={'ON' if settings.dry_run else 'OFF'}"
-    )
-    yield
+    #  6. Apply agent
+    try:
+        await apply_agent.connect()
+        _make_task(apply_agent.start(), "apply-agent")
+        logger.info("[Boot] Apply agent running")
+    except Exception as e:
+        logger.warning(f"[Boot] Apply agent unavailable: {e}")
 
-    # Shutdown — cancel in reverse start order
-    for task, name in [(_repair_task, "repair"), (_consumer_task, "consumer")]:
-        if task:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                logger.info(f"{name} task cancelled cleanly")
+    logger.info("AegisDB ready ✓")
+    logger.info(f"  Webhook  → http://localhost:{settings.app_port}/api/v1/webhook/om-test-failure")
+    logger.info(f"  Audit    → http://localhost:{settings.app_port}/api/v1/audit")
+    logger.info(f"  Streams  → http://localhost:{settings.app_port}/api/v1/streams")
+    logger.info(f"  Docs     → http://localhost:{settings.app_port}/docs")
 
+    yield  # ← app runs here
+
+    #  Shutdown 
+    logger.info("AegisDB shutting down...")
+
+    for agent in [apply_agent, repair_agent, stream_consumer]:
+        agent.stop()
+
+    for name, task in _tasks.items():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            logger.debug(f"{name} cancelled cleanly")
+        except Exception as e:
+            logger.warning(f"{name} shutdown error: {e}")
+
+    await apply_agent.close()
     await repair_agent.close()
     await stream_consumer.close()
     await om_client.close()
     await event_bus.close()
+    await close_audit()
+
+    logger.info("AegisDB shutdown complete")
 
 
 app = FastAPI(
     title="AegisDB",
-    description="Self-healing database agent",
-    version="0.3.0",
+    description="Autonomous self-healing database agent",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
-app.include_router(router, prefix="/api/v1")
+app.include_router(webhook_router, prefix="/api/v1", tags=["Webhook"])
+app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])
 
 
-@app.get("/api/v1/status")
+@app.get("/api/v1/status", tags=["Health"])
 async def status():
+    """Full system health — all 5 pipeline stages."""
     return {
-        "status": "running",
+        "version": "0.4.0",
         "dry_run": settings.dry_run,
-        "components": {
-            "webhook": "ok",
-            "event_bus": "ok",
-            "diagnosis_consumer": (
-                "ok" if _consumer_task and not _consumer_task.done() else "stopped"
-            ),
-            "repair_agent": (
-                "ok" if _repair_task and not _repair_task.done() else "stopped"
-            ),
-            "vector_store": "ok",
+        "confidence_threshold": settings.confidence_threshold,
+        "pipeline": {
+            "1_webhook":            "ok",
+            "2_event_bus":          "ok",
+            "3_diagnosis_consumer": _task_ok("diagnosis-consumer"),
+            "4_repair_agent":       _task_ok("repair-agent"),
+            "5_apply_agent":        _task_ok("apply-agent"),
         },
     }
 
@@ -115,6 +161,6 @@ if __name__ == "__main__":
         "src.main:app",
         host=settings.app_host,
         port=settings.app_port,
-        reload=False,
+        reload=False,  # reload=True kills background tasks on Windows
+        reload_dirs=["src"],
     )
-    
