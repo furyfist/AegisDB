@@ -33,7 +33,6 @@ class OpenMetadataClient:
         return b64encode(password.encode("utf-8")).decode("utf-8")
 
     async def _get_token(self) -> str:
-        """Fetch JWT token. Cache it — OM tokens are long-lived."""
         if self._token:
             return self._token
 
@@ -41,12 +40,25 @@ class OpenMetadataClient:
             "/api/v1/users/login",
             json={
                 "email": settings.om_admin_email,
-                "password": self._encode_password(settings.om_admin_password),
+                "password": settings.om_admin_password,
             },
+            headers={"Content-Type": "application/json"},
         )
+
+        if resp.status_code != 200:
+            # Try the older endpoint format
+            resp = await self._client.post(
+                "/api/v1/users/login",
+                content=f'{{"email":"{settings.om_admin_email}","password":"{settings.om_admin_password}"}}',
+                headers={"Content-Type": "application/json"},
+            )
+
         resp.raise_for_status()
-        self._token = resp.json()["jwtToken"]
-        logger.info("OM auth token acquired")
+        data = resp.json()
+        self._token = data.get("accessToken") or data.get("jwtToken") or data.get("token")
+        if not self._token:
+            raise ValueError(f"No token in OM login response. Keys: {list(data.keys())}")
+        logger.info(f"OM auth token acquired — field used: {[k for k in data.keys() if 'oken' in k]}")
         return self._token
 
     async def _headers(self) -> dict:
