@@ -123,12 +123,12 @@ class VectorStore:
                 continue  # too dissimilar, skip
 
             fixes.append(SimilarFix(
-                fix_id=meta["fix_id"],
-                table_fqn=meta["table_fqn"],
-                failure_category=meta["failure_category"],
-                problem_description=meta["problem_description"],
-                fix_sql=meta["fix_sql"],
-                was_successful=meta["was_successful"] == "True",
+                fix_id=meta.get("fix_id", f"unknown_{i}"),
+                table_fqn=meta.get("table_fqn", ""),
+                failure_category=meta.get("failure_category", ""),
+                problem_description=meta.get("problem_description", ""),
+                fix_sql=meta.get("fix_sql", ""),
+                was_successful=meta.get("was_successful", "False") == "True",
                 similarity_score=similarity,
             ))
 
