@@ -42,18 +42,23 @@ def _get_table_name(table_fqn: str) -> tuple[str, str]:
     return schema, table
 
 
-def _seed_sandbox_sync(
-    conn_url: str,
-    ddl: str,
-    col_names: list[str],
-    rows: list[tuple],
-    table_name: str,
-) -> None:
-    """
-    Sync function — runs inside thread.
-    Seeds the sandbox with schema + sampled data from production.
-    """
-    conn = psycopg2.connect(_to_psycopg2_url(conn_url))
+def _seed_sandbox_sync(conn_url, ddl, col_names, rows, table_name):
+    import time
+    clean_url = _to_psycopg2_url(conn_url)
+    
+    # Retry connection — Postgres may not be ready immediately on Windows
+    last_error = None
+    for attempt in range(10):
+        try:
+            conn = psycopg2.connect(clean_url)
+            break
+        except psycopg2.OperationalError as e:
+            last_error = e
+            logger.info(f"[Sandbox] Waiting for Postgres to be ready (attempt {attempt+1}/10)...")
+            time.sleep(2)
+    else:
+        raise last_error
+
     conn.autocommit = True
     cur = conn.cursor()
     try:
@@ -66,9 +71,7 @@ def _seed_sandbox_sync(
                 f"VALUES ({placeholders}) ON CONFLICT DO NOTHING"
             )
             cur.executemany(insert_sql, rows)
-        logger.info(
-            f"[Sandbox] Seeded {len(rows)} rows into sandbox.{table_name}"
-        )
+        logger.info(f"[Sandbox] Seeded {len(rows)} rows into sandbox.{table_name}")
     finally:
         cur.close()
         conn.close()
@@ -366,7 +369,7 @@ def _run_sandbox_with_assertions_sync(
         username="sandbox_user",
         password="sandbox_pass",
         dbname="sandbox_db",
-        driver="psycopg2",
+        driver=None,
     ) as postgres:
         conn_url = postgres.get_connection_url()
         logger.info(f"[Sandbox] Container ready")
