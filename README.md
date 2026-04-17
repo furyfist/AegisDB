@@ -1,0 +1,1 @@
+command to run all containers: docker compose -f docker\openmetadata\docker-compose.yml up -d
