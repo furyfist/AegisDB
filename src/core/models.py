@@ -190,3 +190,67 @@ class DiagnosisResult(BaseModel):
 
     # Escalation reason (only if is_repairable=False)
     escalation_reason: str | None = None
+
+class TestAssertionResult(BaseModel):
+    """Result of re-running one test assertion inside the sandbox."""
+    test_name: str
+    column_name: str | None
+    passed: bool
+    detail: str = ""
+
+
+class DataDiff(BaseModel):
+    """Before/after snapshot for audit trail."""
+    rows_before: int
+    rows_after: int
+    rows_deleted: int = 0
+    rows_updated: int = 0
+    sample_before: list[dict] = []
+    sample_after: list[dict] = []
+
+
+class SandboxResult(BaseModel):
+    """Full output of the sandbox execution."""
+    event_id: str
+    executed_at: datetime = Field(default_factory=datetime.now)
+
+    # What was run
+    fix_sql_executed: str
+    table_name: str
+
+    # Did it work?
+    sandbox_passed: bool
+    test_assertions: list[TestAssertionResult] = []
+    data_diff: DataDiff | None = None
+
+    # Retry tracking
+    attempt: int = 1
+    error: str | None = None
+
+    # Ready to apply?
+    approved_for_production: bool = False
+
+
+class RepairDecision(BaseModel):
+    """
+    Final decision record — what gets published to aegisdb:apply.
+    The apply agent in Phase 5 reads this.
+    """
+    event_id: str
+    decided_at: datetime = Field(default_factory=datetime.now)
+
+    table_fqn: str
+    table_name: str
+
+    fix_sql: str
+    rollback_sql: str | None = None
+    fix_description: str
+
+    sandbox_result: SandboxResult
+    diagnosis_result_json: str  # serialized DiagnosisResult
+
+    approved: bool
+    rejection_reason: str | None = None
+
+    # Audit
+    dry_run: bool = True
