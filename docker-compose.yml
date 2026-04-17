@@ -9,7 +9,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-version: "3.9"
 volumes:
   ingestion-volume-dag-airflow:
   ingestion-volume-dags:
@@ -532,7 +531,7 @@ services:
   # AegisDB target database — this is what we'll break and fix
   aegisdb-postgres:
     image: postgres:16-alpine
-    container_name: aegisdb_target_db
+    container_name: aegisdb_postgres
     environment:
       POSTGRES_DB: aegisdb
       POSTGRES_USER: aegisdb_user
@@ -552,7 +551,3 @@ services:
 
 networks:
   app_net:
-    ipam:
-      driver: default
-      config:
-        - subnet: "172.16.240.0/24"

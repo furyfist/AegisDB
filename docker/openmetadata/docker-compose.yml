@@ -532,7 +532,7 @@ services:
   # AegisDB target database — this is what we'll break and fix
   aegisdb-postgres:
     image: postgres:16-alpine
-    container_name: aegisdb_target_db
+    container_name: aegisdb_postgres
     environment:
       POSTGRES_DB: aegisdb
       POSTGRES_USER: aegisdb_user
