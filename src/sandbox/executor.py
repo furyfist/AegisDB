@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 _POSTGRES_IMAGE = "postgres:16-alpine"
 
 
+def _to_psycopg2_url(conn_url: str) -> str:
+    """
+    testcontainers returns postgresql+psycopg2://...
+    psycopg2.connect() only accepts postgresql://...
+    Strip the driver part.
+    """
+    return conn_url.replace("postgresql+psycopg2://", "postgresql://")
+
+
 def _get_table_name(table_fqn: str) -> tuple[str, str]:
     """
     Split FQN into (schema, table_name).
@@ -44,7 +53,7 @@ def _seed_sandbox_sync(
     Sync function — runs inside thread.
     Seeds the sandbox with schema + sampled data from production.
     """
-    conn = psycopg2.connect(conn_url)
+    conn = psycopg2.connect(_to_psycopg2_url(conn_url))
     conn.autocommit = True
     cur = conn.cursor()
     try:
@@ -69,7 +78,7 @@ def _run_fix_sync(conn_url: str, fix_sql: str) -> int:
     """
     Sync. Executes the fix SQL, returns rowcount.
     """
-    conn = psycopg2.connect(conn_url)
+    conn = psycopg2.connect(_to_psycopg2_url(conn_url))
     conn.autocommit = False
     cur = conn.cursor()
     try:
@@ -87,7 +96,7 @@ def _run_fix_sync(conn_url: str, fix_sql: str) -> int:
 
 
 def _get_row_count_sync(conn_url: str, table_name: str) -> int:
-    conn = psycopg2.connect(conn_url)
+    conn = psycopg2.connect(_to_psycopg2_url(conn_url))
     cur = conn.cursor()
     try:
         cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
@@ -98,7 +107,7 @@ def _get_row_count_sync(conn_url: str, table_name: str) -> int:
 
 
 def _get_sample_sync(conn_url: str, table_name: str, limit: int = 10) -> list[dict]:
-    conn = psycopg2.connect(conn_url)
+    conn = psycopg2.connect(_to_psycopg2_url(conn_url))
     cur = conn.cursor()
     try:
         cur.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}')
@@ -386,6 +395,8 @@ def _run_sandbox_with_assertions_sync(
         assertion_dicts = []
         if fix_success:
             async_url = conn_url.replace(
+                "postgresql+psycopg2://", "postgresql+asyncpg://"
+            ).replace(
                 "postgresql://", "postgresql+asyncpg://"
             )
             engine = create_async_engine(async_url, echo=False)
