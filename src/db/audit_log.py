@@ -60,7 +60,43 @@ async def init_audit_table():
     )
     try:
         async with _audit_engine.begin() as conn:
-            await conn.execute(text(_CREATE_TABLE_SQL))
+            # asyncpg requires each statement in its own execute call
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS _aegisdb_audit (
+                    id                   SERIAL PRIMARY KEY,
+                    event_id             VARCHAR(36)  NOT NULL,
+                    table_fqn            TEXT         NOT NULL,
+                    table_name           TEXT         NOT NULL,
+                    action               VARCHAR(20)  NOT NULL,
+                    fix_sql              TEXT         DEFAULT '',
+                    rollback_sql         TEXT,
+                    rows_affected        INTEGER      DEFAULT 0,
+                    dry_run              BOOLEAN      DEFAULT TRUE,
+                    sandbox_passed       BOOLEAN      DEFAULT FALSE,
+                    confidence           FLOAT        DEFAULT 0.0,
+                    failure_categories   TEXT[]       DEFAULT ARRAY[]::TEXT[],
+                    applied_at           TIMESTAMPTZ  DEFAULT NOW(),
+                    post_apply_json      JSONB        DEFAULT '[]'::jsonb,
+                    error                TEXT,
+                    metadata_json        JSONB        DEFAULT '{}'::jsonb
+                )
+            """))
+
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_audit_event_id
+                ON _aegisdb_audit (event_id)
+            """))
+
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_audit_applied_at
+                ON _aegisdb_audit (applied_at DESC)
+            """))
+
+            await conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_audit_table_fqn
+                ON _aegisdb_audit (table_fqn)
+            """))
+
         logger.info("[AuditLog] Table _aegisdb_audit ready")
     except Exception as e:
         logger.error(f"[AuditLog] Failed to create audit table: {e}")
