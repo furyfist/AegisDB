@@ -123,12 +123,15 @@ async def _assert_unique(conn, table: str, col: str, test_name: str) -> TestAsse
 
 
 async def _assert_regex(conn, table: str, col: str, test_name: str) -> TestAssertionResult:
+    # Use raw string for regex — avoids SyntaxWarning on escape sequences
+    email_regex = r'^[^@]+@[^@]+\.[^@]+$'
     result = await conn.execute(
         text(
             f'SELECT COUNT(*) FROM "{table}" '
-            r"WHERE \"" + col + r"\" IS NOT NULL "
-            r"AND \"" + col + r"\" !~ '^[^@]+@[^@]+\.[^@]+$'"
-        )
+            f'WHERE "{col}" IS NOT NULL '
+            f"AND \"{col}\" !~ :pattern"
+        ),
+        {"pattern": email_regex},
     )
     bad_count = result.scalar()
     passed = bad_count == 0
