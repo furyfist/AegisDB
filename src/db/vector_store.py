@@ -112,15 +112,13 @@ class VectorStore:
         )
 
         fixes = []
-        for meta, distance in zip(
+        for i, (meta, distance) in enumerate(zip(
             results["metadatas"][0],
             results["distances"][0],
-        ):
-            # ChromaDB cosine distance: 0 = identical, 2 = opposite
-            # Convert to similarity score: 1 - (distance/2)
+        )):
             similarity = round(1.0 - (distance / 2.0), 4)
             if similarity < 0.3:
-                continue  # too dissimilar, skip
+                continue
 
             fixes.append(SimilarFix(
                 fix_id=meta.get("fix_id", f"unknown_{i}"),
