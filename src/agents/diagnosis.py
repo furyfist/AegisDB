@@ -1,6 +1,6 @@
 import json
 import logging
-from anthropic import AsyncAnthropic
+from groq import AsyncGroq
 
 from src.core.config import settings
 from src.core.models import (
@@ -115,7 +115,7 @@ class DiagnosisAgent:
     """
 
     def __init__(self):
-        self._llm = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._llm = AsyncGroq(api_key=settings.groq_api_key)
 
     async def run(
         self,
@@ -183,14 +183,17 @@ class DiagnosisAgent:
     ) -> str:
         user_prompt = _build_user_prompt(event, detector, similar_fixes)
 
-        response = await self._llm.messages.create(
+        response = await self._llm.chat.completions.create(
             model=settings.llm_model,
             max_tokens=settings.llm_max_tokens,
-            system=_build_system_prompt(),
-            messages=[{"role": "user", "content": user_prompt}],
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _build_system_prompt()},
+                {"role": "user", "content": user_prompt},
+            ],
         )
 
-        raw = response.content[0].text.strip()
+        raw = (response.choices[0].message.content or "").strip()
         logger.debug(f"LLM raw response:\n{raw}")
         return raw
 

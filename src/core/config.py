@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     webhook_secret: str = "aegisdb_secret_123"
 
     # LLM
-    anthropic_api_key: str = ""
-    llm_model: str = "claude-sonnet-4-6"
+    groq_api_key: str = ""
+    llm_model: str = "llama-3.3-70b-versatile"
     llm_max_tokens: int = 2048
 
     # ChromaDB
