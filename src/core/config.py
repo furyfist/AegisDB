@@ -1,5 +1,11 @@
+from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
 
 
 class Settings(BaseSettings):

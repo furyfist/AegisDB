@@ -106,7 +106,9 @@ The Repair agent will substitute the real table name before execution."""
 
 class DiagnosisAgent:
     def __init__(self):
-        self._llm = AsyncGroq(api_key=settings.groq_api_key)
+        self._llm = AsyncGroq(
+            api_key=settings.groq_api_key.get_secret_value()
+        )
 
     async def run(
         self,
