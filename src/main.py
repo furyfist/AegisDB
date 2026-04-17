@@ -50,5 +50,3 @@ if __name__ == "__main__":
         port=settings.app_port,
         reload=True,
     )
-
-# put in claude: {"status":"accepted","event_id":"35c1c7b1-85d0-4e97-9a92-cfdea1fc1665","table_fqn":"aegisdb-target.aegisdb.public.orders","failed_tests":1}
