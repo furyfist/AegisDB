@@ -52,13 +52,11 @@ def _build_user_prompt(
     detector: DetectorResult,
     similar_fixes: list[SimilarFix],
 ) -> str:
-    # Format failed tests
     tests_text = "\n".join(
         f"  - Column '{t.column_name}': {t.test_name} → {t.failure_reason}"
         for t in event.failed_tests
     )
 
-    # Format table schema
     schema_text = "Not available"
     if event.table_context:
         ctx = event.table_context
@@ -74,7 +72,6 @@ def _build_user_prompt(
             f"Downstream: {ctx.downstream_tables or 'none'}"
         )
 
-    # Format similar fixes from KB
     kb_text = "No similar fixes found in knowledge base (first occurrence)."
     if similar_fixes:
         kb_entries = "\n".join(
@@ -108,16 +105,8 @@ The Repair agent will substitute the real table name before execution."""
 
 
 class DiagnosisAgent:
-    """
-    Core reasoning agent.
-    Reads an enriched event, queries the KB, calls the LLM,
-    returns a structured DiagnosisResult.
-    """
-
     def __init__(self):
-        self._llm = AsyncGroq(
-            api_key=settings.groq_api_key.get_secret_value()
-        )
+        self._llm = AsyncGroq(api_key=settings.groq_api_key)
 
     async def run(
         self,
@@ -125,10 +114,11 @@ class DiagnosisAgent:
         detector_result: DetectorResult,
     ) -> DiagnosisResult:
 
-        logger.info(f"[Diagnosis] Starting for event={event.event_id} "
-                    f"table={event.table_fqn}")
+        logger.info(
+            f"[Diagnosis] Starting for event={event.event_id} "
+            f"table={event.table_fqn}"
+        )
 
-        # Fast-path: not actionable → skip LLM, escalate immediately
         if not detector_result.is_actionable:
             return DiagnosisResult(
                 event_id=event.event_id,
@@ -142,7 +132,6 @@ class DiagnosisAgent:
                 ),
             )
 
-        # RAG: find similar past fixes
         primary_category = detector_result.failure_categories[0]
         problem_desc = " ".join(
             f"{t.column_name}: {t.failure_reason}"
@@ -155,7 +144,6 @@ class DiagnosisAgent:
             top_k=3,
         )
 
-        # LLM call
         try:
             raw_diagnosis = await self._call_llm(event, detector_result, similar_fixes)
         except Exception as e:
@@ -169,7 +157,6 @@ class DiagnosisAgent:
                 escalation_reason=f"LLM error: {e}",
             )
 
-        # Parse LLM response
         return self._parse_llm_response(
             event.event_id,
             raw_diagnosis,
@@ -184,18 +171,20 @@ class DiagnosisAgent:
         similar_fixes: list[SimilarFix],
     ) -> str:
         user_prompt = _build_user_prompt(event, detector, similar_fixes)
+        system_prompt = _build_system_prompt()
 
+        # Groq uses OpenAI-compatible chat completions format
         response = await self._llm.chat.completions.create(
             model=settings.llm_model,
             max_tokens=settings.llm_max_tokens,
-            response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": _build_system_prompt()},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            temperature=0.1,  # low temp for deterministic SQL generation
         )
 
-        raw = (response.choices[0].message.content or "").strip()
+        raw = response.choices[0].message.content.strip()
         logger.debug(f"LLM raw response:\n{raw}")
         return raw
 
@@ -206,14 +195,15 @@ class DiagnosisAgent:
         detector: DetectorResult,
         similar_fixes: list[SimilarFix],
     ) -> DiagnosisResult:
-        """Parse LLM JSON output into DiagnosisResult. Defensive — never crashes."""
         try:
-            # Strip markdown fences if LLM added them despite instructions
             clean = raw.strip()
             if clean.startswith("```"):
-                clean = "\n".join(clean.split("\n")[1:])
+                lines = clean.split("\n")
+                # strip opening fence (```json or ```)
+                clean = "\n".join(lines[1:])
             if clean.endswith("```"):
                 clean = "\n".join(clean.split("\n")[:-1])
+            clean = clean.strip()
 
             data = json.loads(clean)
             confidence = float(data.get("confidence", 0.0))
@@ -260,10 +250,9 @@ class DiagnosisAgent:
                 root_cause=f"LLM response parse error: {e}",
                 confidence=0.0,
                 is_repairable=False,
-                escalation_reason=f"Parse error: {e}. Raw LLM output saved in llm_reasoning.",
+                escalation_reason=f"Parse error: {e}",
                 llm_reasoning=raw,
             )
 
 
-# Module-level singleton
 diagnosis_agent = DiagnosisAgent()
