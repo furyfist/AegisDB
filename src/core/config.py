@@ -56,5 +56,7 @@ class Settings(BaseSettings):
 
     # Apply
     dry_run: bool = True
+    apply_statement_timeout_ms: int = 30000
+    post_apply_verify: bool = True
 
 settings = Settings()

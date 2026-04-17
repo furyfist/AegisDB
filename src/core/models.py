@@ -254,3 +254,46 @@ class RepairDecision(BaseModel):
 
     # Audit
     dry_run: bool = True
+
+# ── Phase 5 models ────────────────────────────────────────────────────────────
+
+class ApplyAction(str, Enum):
+    APPLIED = "applied"
+    DRY_RUN = "dry_run"
+    ROLLED_BACK = "rolled_back"
+    SKIPPED = "skipped"
+    FAILED = "failed"
+
+
+class AuditEntry(BaseModel):
+    """
+    Persisted to _aegisdb_audit table in the target DB.
+    One row per fix attempt — the full decision trail.
+    """
+    event_id: str
+    table_fqn: str
+    table_name: str
+    action: ApplyAction
+    fix_sql: str = ""
+    rollback_sql: str | None = None
+    rows_affected: int = 0
+    dry_run: bool = True
+    sandbox_passed: bool = False
+    confidence: float = 0.0
+    failure_categories: list[str] = []
+    applied_at: datetime = Field(default_factory=datetime.now)
+    post_apply_assertions: list[dict] = []
+    error: str | None = None
+
+
+class ApplyResult(BaseModel):
+    """Final outcome of the apply agent for one event."""
+    event_id: str
+    table_fqn: str
+    action: ApplyAction
+    rows_affected: int = 0
+    post_apply_passed: bool = False
+    post_apply_assertions: list[TestAssertionResult] = []
+    audit_id: int | None = None
+    error: str | None = None
+    completed_at: datetime = Field(default_factory=datetime.now)
