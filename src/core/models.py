@@ -297,3 +297,55 @@ class ApplyResult(BaseModel):
     audit_id: int | None = None
     error: str | None = None
     completed_at: datetime = Field(default_factory=datetime.now)
+
+# ── Profiling Engine 
+
+class AnomalySeverity(str, Enum):
+    INFO     = "info"
+    WARNING  = "warning"
+    CRITICAL = "critical"
+
+
+class ColumnAnomaly(BaseModel):
+    """
+    One detected anomaly on one column.
+    Maps directly to a FailureCategory so the existing
+    Detector → Diagnosis → Repair pipeline can process it.
+    """
+    column_name:    str
+    anomaly_type:   FailureCategory
+    severity:       AnomalySeverity
+    affected_rows:  int
+    total_rows:     int
+    rate:           float            # affected_rows / total_rows
+    description:    str
+    sample_values:  list[Any] = []  # up to 5 example bad values
+
+
+class TableProfile(BaseModel):
+    """Profiling result for a single table."""
+    table_name:            str
+    schema_name:           str
+    total_rows:            int
+    total_columns:         int
+    anomalies:             list[ColumnAnomaly] = []
+    profiled_at:           datetime = Field(default_factory=datetime.now)
+    profiling_duration_ms: int = 0
+
+
+class ProfilingReport(BaseModel):
+    """
+    Full profiling output for a database connection.
+    Returned by POST /api/v1/profile and stored in _aegisdb_profiling_reports.
+    """
+    report_id:       str = Field(default_factory=lambda: str(uuid.uuid4()) if True else "")
+    connection_hint: str = ""        # host:port/db — no credentials stored
+    profiled_at:     datetime = Field(default_factory=datetime.now)
+    tables_scanned:  int = 0
+    total_anomalies: int = 0
+    critical_count:  int = 0
+    warning_count:   int = 0
+    tables:          list[TableProfile] = []
+    status:          str = "completed"  # completed | failed | partial
+    error:           str | None = None
+    duration_ms:     int = 0
