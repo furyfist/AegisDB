@@ -14,6 +14,7 @@ from src.agents.apply import apply_agent
 from src.db.vector_store import vector_store
 from src.db.audit_log import init_audit_table, close_audit
 from src.core.config import settings
+from src.db.event_store import init_event_store, close_event_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -94,6 +95,13 @@ async def lifespan(app: FastAPI):
         logger.info("[Boot] Apply agent running")
     except Exception as e:
         logger.warning(f"[Boot] Apply agent unavailable: {e}")
+    
+    # ── 2b. Event store ────────────────────────────────────────────────
+    try:
+        await init_event_store()
+        logger.info("[Boot] Event store ready")
+    except Exception as e:
+        logger.warning(f"[Boot] Event store unavailable (non-fatal): {e}")
 
     logger.info("AegisDB ready ✓")
     logger.info(f"  Webhook  → http://localhost:{settings.app_port}/api/v1/webhook/om-test-failure")
@@ -123,6 +131,7 @@ async def lifespan(app: FastAPI):
     await stream_consumer.close()
     await om_client.close()
     await event_bus.close()
+    await close_event_store()
     await close_audit()
 
     logger.info("AegisDB shutdown complete")
