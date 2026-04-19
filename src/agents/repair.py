@@ -230,5 +230,43 @@ def _guess_column(category: str, table_fqn: str) -> str:
     }
     return mapping.get(category, "id")
 
+def _fallback_event_from_diagnosis(
+    diagnosis: DiagnosisResult,
+    fields: dict,
+) -> EnrichedFailureEvent:
+    """
+    Last-resort fallback when event store lookup fails.
+    Uses diagnosis data to reconstruct a minimal event.
+    Should rarely fire in practice.
+    """
+    from src.core.models import FailedTest, TestStatus
+
+    table_fqn = fields.get("table_fqn", "unknown")
+
+    # Column map is a fallback only — real data comes from event store
+    _col_map = {
+        "null_violation":        "id",
+        "range_violation":       "amount",
+        "uniqueness_violation":  "email",
+        "referential_integrity": "id",
+        "format_violation":      "email",
+    }
+
+    failed_tests = [
+        FailedTest(
+            test_name=cat.value,
+            test_fqn=f"{table_fqn}.{cat.value}",
+            column_name=_col_map.get(cat.value, "id"),
+            failure_reason=diagnosis.root_cause,
+            status=TestStatus.FAILED,
+        )
+        for cat in diagnosis.failure_categories
+    ]
+
+    return EnrichedFailureEvent(
+        event_id=diagnosis.event_id,
+        table_fqn=table_fqn,
+        failed_tests=failed_tests,
+    )
 
 repair_agent = RepairAgent()
