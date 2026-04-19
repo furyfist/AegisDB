@@ -349,3 +349,59 @@ class ProfilingReport(BaseModel):
     status:          str = "completed"  # completed | failed | partial
     error:           str | None = None
     duration_ms:     int = 0
+
+# ── Onboarding 
+
+class ConnectionStatus(str, Enum):
+    PENDING    = "pending"
+    CONNECTED  = "connected"
+    INGESTING  = "ingesting"
+    PROFILING  = "profiling"
+    READY      = "ready"
+    FAILED     = "failed"
+
+
+class DatabaseConnection(BaseModel):
+    """
+    A registered database connection in AegisDB.
+    Credentials are never stored — only the connection URL hint.
+    """
+    connection_id:    str = Field(
+        default_factory=lambda: str(uuid.uuid4())
+    )
+    service_name:     str           # name registered in OpenMetadata
+    connection_hint:  str           # host:port/db — no credentials
+    db_name:          str
+    schema_names:     list[str] = ["public"]
+    status:           ConnectionStatus = ConnectionStatus.PENDING
+    om_service_fqn:   str = ""      # FQN assigned by OM
+    profiling_report_id: str | None = None
+    tables_found:     int = 0
+    total_anomalies:  int = 0
+    critical_count:   int = 0
+    registered_at:    datetime = Field(default_factory=datetime.now)
+    last_profiled_at: datetime | None = None
+    error:            str | None = None
+
+
+class ConnectRequest(BaseModel):
+    """Body for POST /api/v1/connect"""
+    host:         str
+    port:         int = 5432
+    database:     str
+    username:     str
+    password:     str
+    schemas:      list[str] = ["public"]
+    service_name: str | None = None  # auto-generated if not provided
+
+
+class ConnectResponse(BaseModel):
+    connection_id:   str
+    service_name:    str
+    connection_hint: str
+    status:          ConnectionStatus
+    tables_found:    int
+    total_anomalies: int
+    critical_count:  int
+    profiling_report_id: str | None
+    message:         str
