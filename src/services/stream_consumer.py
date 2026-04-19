@@ -4,7 +4,7 @@ import logging
 import redis.asyncio as redis
 
 from src.core.config import settings
-from src.core.models import EnrichedFailureEvent, DiagnosisResult
+from src.core.models import EnrichedFailureEvent, DiagnosisResult,RepairProposalRecord
 from src.agents.detector import run_detector
 from src.agents.diagnosis import diagnosis_agent
 
@@ -120,36 +120,107 @@ class StreamConsumer:
         event: EnrichedFailureEvent,
         result: DiagnosisResult,
     ):
-        """Publish diagnosis result to the appropriate downstream stream."""
-        payload = {
-            "event_id": result.event_id,
-            "table_fqn": event.table_fqn,
-            "confidence": str(result.confidence),
-            "is_repairable": str(result.is_repairable),
-            "data": result.model_dump_json(),
-        }
-
-        if result.is_repairable:
-            stream = settings.redis_repair_stream
-            logger.info(
-                f"[Router] → REPAIR stream | confidence={result.confidence:.2f} | "
-                f"fix={result.repair_proposal.fix_sql[:60] if result.repair_proposal else 'none'}..."
+        """
+        Phase D: Instead of publishing directly to aegisdb:repair,
+        create a RepairProposalRecord and wait for user approval.
+        Escalation path (low confidence) stays unchanged.
+        """
+        if not result.is_repairable:
+            # Escalation — same as before, no approval gate needed
+            payload = {
+                "event_id":  result.event_id,
+                "table_fqn": event.table_fqn,
+                "confidence": str(result.confidence),
+                "is_repairable": "False",
+                "data": result.model_dump_json(),
+            }
+            await self._redis.xadd(
+                settings.redis_escalation_stream, payload, maxlen=500
             )
-        else:
-            stream = settings.redis_escalation_stream
             logger.info(
                 f"[Router] → ESCALATION stream | reason={result.escalation_reason}"
             )
+            return
 
-        await self._redis.xadd(stream, payload, maxlen=500)
+        # Repairable — run sandbox preview FIRST, then create proposal
+        # This gives the user real before/after data to review
+        proposal = await self._build_proposal(event, result)
+        await self._save_proposal(proposal)
+        logger.info(
+            f"[Router] → PROPOSAL created | id={proposal.proposal_id} "
+            f"confidence={result.confidence:.2f} "
+            f"fix={result.repair_proposal.fix_sql[:60] if result.repair_proposal else 'none'}..."
+        )
 
-    def stop(self):
-        self._running = False
+    async def _build_proposal(
+        self,
+        event: EnrichedFailureEvent,
+        diagnosis: DiagnosisResult,
+    ) -> "RepairProposalRecord":
+        """
+        Run sandbox silently to get the data diff preview.
+        The user sees exactly what will change before approving.
+        """
+        from src.core.models import RepairProposalRecord
+        from src.sandbox.executor import run_sandbox
 
-    async def close(self):
-        self.stop()
-        if self._redis:
-            await self._redis.aclose()
+        proposal = diagnosis.repair_proposal
+        parts     = event.table_fqn.split(".")
+        table_name = parts[-1] if parts else event.table_fqn
 
+        # Default values — used if sandbox fails
+        sandbox_passed = False
+        rows_before    = 0
+        rows_after     = 0
+        rows_affected  = 0
+        sample_before: list[dict] = []
+        sample_after:  list[dict] = []
+
+        if proposal:
+            try:
+                sandbox_result = await run_sandbox(event, diagnosis, attempt=1)
+                sandbox_passed = sandbox_result.sandbox_passed
+                if sandbox_result.data_diff:
+                    rows_before   = sandbox_result.data_diff.rows_before
+                    rows_after    = sandbox_result.data_diff.rows_after
+                    rows_affected = (
+                        sandbox_result.data_diff.rows_deleted
+                        + sandbox_result.data_diff.rows_updated
+                    )
+                    sample_before = sandbox_result.data_diff.sample_before
+                    sample_after  = sandbox_result.data_diff.sample_after
+            except Exception as e:
+                logger.warning(
+                    f"[Router] Sandbox preview failed for proposal: {e} "
+                    f"— creating proposal without preview"
+                )
+
+        return RepairProposalRecord(
+            event_id=event.event_id,
+            table_fqn=event.table_fqn,
+            table_name=table_name,
+            failure_categories=[c.value for c in diagnosis.failure_categories],
+            root_cause=diagnosis.root_cause,
+            confidence=diagnosis.confidence,
+            fix_sql=proposal.fix_sql if proposal else "",
+            fix_description=proposal.fix_description if proposal else "",
+            rollback_sql=proposal.rollback_sql if proposal else None,
+            estimated_rows=proposal.estimated_rows_affected if proposal else None,
+            sandbox_passed=sandbox_passed,
+            rows_before=rows_before,
+            rows_after=rows_after,
+            rows_affected=rows_affected,
+            sample_before=sample_before,
+            sample_after=sample_after,
+            diagnosis_json=diagnosis.model_dump_json(),
+            event_json=event.model_dump_json(),
+        )
+
+    async def _save_proposal(self, proposal: "RepairProposalRecord"):
+        from src.db.proposal_store import create_proposal
+        try:
+            await create_proposal(proposal)
+        except Exception as e:
+            logger.error(f"[Router] Proposal save failed: {e}")
 
 stream_consumer = StreamConsumer()
