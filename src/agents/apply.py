@@ -391,25 +391,40 @@ def _extract_categories(diagnosis_json: str) -> list[str]:
 
 def _extract_failed_tests(diagnosis_json: str) -> list[FailedTest]:
     """
-    Reconstruct FailedTest list from diagnosis JSON for post-apply assertions.
-    Matches what the repair agent originally passed to the sandbox.
+    Extract failed tests from diagnosis JSON.
+    The apply agent uses this for post-apply assertions.
+    In Phase A this still reads from diagnosis JSON — the apply agent
+    receives a RepairDecision which contains the diagnosis but not the
+    original event. A proper fix would store the event_id on the
+    RepairDecision and look it up, but for now the diagnosis categories
+    are enough to run the correct assertions.
     """
     try:
         data = json.loads(diagnosis_json)
         categories = data.get("failure_categories", [])
         root_cause = data.get("root_cause", "")
 
+        # These are the actual assertion functions in validator.py
+        # Map category → test name that validator.py recognizes
+        _assertion_map = {
+            "null_violation":        "columnValuesToBeNotNull",
+            "range_violation":       "columnValuesToBeBetween",
+            "uniqueness_violation":  "columnValuesToBeUnique",
+            "referential_integrity": "columnValuesToBeNotNull",
+            "format_violation":      "columnValuesToMatchRegex",
+        }
+
         _col_map = {
-            "null_violation": "customer_id",
-            "range_violation": "amount",
-            "uniqueness_violation": "email",
+            "null_violation":        "customer_id",
+            "range_violation":       "amount",
+            "uniqueness_violation":  "email",
             "referential_integrity": "customer_id",
-            "format_violation": "email",
+            "format_violation":      "email",
         }
 
         return [
             FailedTest(
-                test_name=cat,
+                test_name=_assertion_map.get(cat, cat),
                 test_fqn=f"post_apply.{cat}",
                 column_name=_col_map.get(cat, "id"),
                 failure_reason=root_cause,
@@ -419,7 +434,6 @@ def _extract_failed_tests(diagnosis_json: str) -> list[FailedTest]:
         ]
     except Exception:
         return []
-
 
 # Module-level singleton
 apply_agent = ApplyAgent()
