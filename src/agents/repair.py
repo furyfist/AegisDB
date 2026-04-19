@@ -219,35 +219,6 @@ class RepairAgent:
             await self._redis.aclose()
 
 
-def _minimal_event_from_diagnosis(
-    diagnosis: DiagnosisResult,
-    fields: dict,
-) -> EnrichedFailureEvent:
-    """
-    Reconstruct enough of EnrichedFailureEvent to run the sandbox.
-    In Phase 5 we'll add an event store for proper lookup.
-    """
-    from src.core.models import EnrichedFailureEvent, FailedTest, TestStatus
-
-    table_fqn = fields.get("table_fqn", "unknown")
-
-    failed_tests = []
-    for cat in diagnosis.failure_categories:
-        failed_tests.append(FailedTest(
-            test_name=cat.value,
-            test_fqn=f"{table_fqn}.{cat.value}",
-            column_name=_guess_column(cat.value, table_fqn),
-            failure_reason=diagnosis.root_cause,
-            status=TestStatus.FAILED,
-        ))
-
-    return EnrichedFailureEvent(
-        event_id=diagnosis.event_id,
-        table_fqn=table_fqn,
-        failed_tests=failed_tests,
-    )
-
-
 def _guess_column(category: str, table_fqn: str) -> str:
     """Heuristic column guess from category — good enough for sandbox."""
     mapping = {
