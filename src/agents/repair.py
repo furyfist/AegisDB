@@ -84,10 +84,19 @@ class RepairAgent:
         try:
             diagnosis = DiagnosisResult.model_validate_json(fields["data"])
 
-            # We need the original event for context — reconstruct minimal version
-            # In production you'd store events in Redis or a DB for lookup
-            # For now build a minimal EnrichedFailureEvent from diagnosis data
-            event = _minimal_event_from_diagnosis(diagnosis, fields)
+            # Look up the original enriched event from the event store
+            # This gives us the real column names, real failed tests,
+            # real table context — no hardcoded guessing
+            from src.db.event_store import get_event
+            event = await get_event(event_id)
+
+            if not event:
+                # Fallback: build minimal event from diagnosis if store lookup fails
+                logger.warning(
+                    f"[RepairAgent] Event {event_id} not in store — "
+                    f"using diagnosis fallback"
+                )
+                event = _fallback_event_from_diagnosis(diagnosis, fields)
 
             decision = await self._run_with_retries(event, diagnosis)
             await self._route_decision(decision)
