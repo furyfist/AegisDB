@@ -18,6 +18,8 @@ from src.db.event_store import init_event_store, close_event_store
 from src.api.profiler_routes import router as profiler_router
 from src.db.profiling_store import init_profiling_store, close_profiling_store
 from src.api.onboarding_routes import router as onboarding_router
+from src.api.proposal_routes import router as proposal_router
+from src.db.proposal_store import init_proposal_store, close_proposal_store
 from src.db.connection_registry import (
     init_connection_registry,
     close_connection_registry,
@@ -123,6 +125,13 @@ async def lifespan(app: FastAPI):
         logger.info("[Boot] Connection registry ready")
     except Exception as e:
         logger.warning(f"[Boot] Connection registry unavailable: {e}")    
+    
+    # ── 2e. Proposal store 
+    try:
+        await init_proposal_store()
+        logger.info("[Boot] Proposal store ready")
+    except Exception as e:
+        logger.warning(f"[Boot] Proposal store unavailable: {e}")
 
     logger.info("AegisDB ready ✓")
     logger.info(f"  Webhook  → http://localhost:{settings.app_port}/api/v1/webhook/om-test-failure")
@@ -155,6 +164,7 @@ async def lifespan(app: FastAPI):
     await close_event_store()
     await close_profiling_store()
     await close_connection_registry()
+    await close_proposal_store()
     await close_audit()
 
     logger.info("AegisDB shutdown complete")
@@ -171,6 +181,7 @@ app.include_router(webhook_router, prefix="/api/v1", tags=["Webhook"])
 app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])
 app.include_router(profiler_router, prefix="/api/v1", tags=["Profiler"])
 app.include_router(onboarding_router, prefix="/api/v1", tags=["Onboarding"])
+app.include_router(proposal_router, prefix="/api/v1", tags=["Proposals"])
 
 @app.get("/api/v1/status", tags=["Health"])
 async def status():
