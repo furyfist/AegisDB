@@ -405,3 +405,53 @@ class ConnectResponse(BaseModel):
     critical_count:  int
     profiling_report_id: str | None
     message:         str
+
+# ── Phase D models — Approval Workflow 
+
+class ProposalStatus(str, Enum):
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED         = "approved"
+    REJECTED         = "rejected"
+    EXECUTING        = "executing"   # repair agent picked it up
+    COMPLETED        = "completed"   # apply agent finished
+    FAILED           = "failed"
+
+
+class RepairProposalRecord(BaseModel):
+    """
+    Created by the diagnosis consumer when confidence >= threshold.
+    Sits pending until a user explicitly approves or rejects it.
+    On approval the full DiagnosisResult is published to aegisdb:repair
+    and the existing repair → sandbox → apply pipeline runs unchanged.
+    """
+    proposal_id:        str = Field(
+        default_factory=lambda: str(uuid.uuid4())
+    )
+    event_id:           str
+    table_fqn:          str
+    table_name:         str
+    failure_categories: list[str] = []
+    root_cause:         str
+    confidence:         float
+    fix_sql:            str
+    fix_description:    str
+    rollback_sql:       str | None = None
+    estimated_rows:     int | None = None
+
+    # Sandbox preview — shown to user before they approve
+    sandbox_passed:     bool = False
+    rows_before:        int = 0
+    rows_after:         int = 0
+    rows_affected:      int = 0
+    sample_before:      list[dict] = []
+    sample_after:       list[dict] = []
+
+    status:             ProposalStatus = ProposalStatus.PENDING_APPROVAL
+    created_at:         datetime = Field(default_factory=datetime.now)
+    decided_at:         datetime | None = None
+    decision_by:        str = "system"
+    rejection_reason:   str | None = None
+
+    # Full serialized objects for pipeline re-entry on approval
+    diagnosis_json:     str = ""   # serialized DiagnosisResult
+    event_json:         str = ""   # serialized EnrichedFailureEvent
