@@ -15,6 +15,8 @@ from src.db.vector_store import vector_store
 from src.db.audit_log import init_audit_table, close_audit
 from src.core.config import settings
 from src.db.event_store import init_event_store, close_event_store
+from src.api.profiler_routes import router as profiler_router
+from src.db.profiling_store import init_profiling_store, close_profiling_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,12 +98,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Boot] Apply agent unavailable: {e}")
     
-    # ── 2b. Event store ────────────────────────────────────────────────
+    # ── 2b. Event store 
     try:
         await init_event_store()
         logger.info("[Boot] Event store ready")
     except Exception as e:
         logger.warning(f"[Boot] Event store unavailable (non-fatal): {e}")
+
+    # ── 2c. Profiling store 
+    try:
+        await init_profiling_store()
+        logger.info("[Boot] Profiling store ready")
+    except Exception as e:
+        logger.warning(f"[Boot] Profiling store unavailable: {e}")
 
     logger.info("AegisDB ready ✓")
     logger.info(f"  Webhook  → http://localhost:{settings.app_port}/api/v1/webhook/om-test-failure")
@@ -132,6 +141,7 @@ async def lifespan(app: FastAPI):
     await om_client.close()
     await event_bus.close()
     await close_event_store()
+    await close_profiling_store()
     await close_audit()
 
     logger.info("AegisDB shutdown complete")
@@ -146,7 +156,7 @@ app = FastAPI(
 
 app.include_router(webhook_router, prefix="/api/v1", tags=["Webhook"])
 app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])
-
+app.include_router(profiler_router, prefix="/api/v1", tags=["Profiler"])
 
 @app.get("/api/v1/status", tags=["Health"])
 async def status():
