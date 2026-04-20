@@ -237,3 +237,64 @@ async def get_live_table_data(
         "anomaly_columns": anomaly_columns,
         "last_profiled_at": conn_record.get("last_profiled_at"),
     }
+
+@router.get("/connections/{connection_id}/health")
+async def get_connection_health(connection_id: str):
+    """
+    Real-time health score for a connected database.
+    Score computed from profiling report anomaly counts.
+    """
+    from src.db.connection_registry import get_connection
+    from src.db.profiling_store import get_profiling_report
+    import asyncpg
+    from src.core.config import settings
+
+    conn_record = await get_connection(connection_id)
+    if not conn_record:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    # Compute health score
+    critical = conn_record.get("critical_count") or 0
+    warnings = (conn_record.get("total_anomalies") or 0) - critical
+    warnings = max(0, warnings)
+
+    if (conn_record.get("total_anomalies") or 0) == 0:
+        health_score = 100
+        status_label = "clean"
+    elif critical == 0:
+        health_score = max(50, 100 - (warnings * 3))
+        status_label = "partial"
+    else:
+        health_score = max(0, 100 - (critical * 10) - (warnings * 3))
+        status_label = "dirty"
+
+    # Per-table breakdown from profiling report
+    tables_summary = []
+    if conn_record.get("profiling_report_id"):
+        try:
+            report = await get_profiling_report(conn_record["profiling_report_id"])
+            if report:
+                for t in (report.get("tables") or []):
+                    anomaly_count = len(t.get("anomalies") or [])
+                    tables_summary.append({
+                        "table_name":    t.get("table_name"),
+                        "schema":        t.get("schema_name", "public"),
+                        "anomaly_count": anomaly_count,
+                        "status":        "dirty" if anomaly_count > 0 else "clean",
+                    })
+        except Exception:
+            pass
+
+    return {
+        "connection_id":     connection_id,
+        "health_score":      health_score,
+        "status":            status_label,
+        "total_anomalies":   conn_record.get("total_anomalies") or 0,
+        "critical_count":    critical,
+        "warning_count":     warnings,
+        "tables_found":      conn_record.get("tables_found") or 0,
+        "tables":            tables_summary,
+        "last_profiled_at":  conn_record.get("last_profiled_at"),
+        "db_name":           conn_record.get("db_name"),
+        "connection_hint":   conn_record.get("connection_hint"),
+    }
