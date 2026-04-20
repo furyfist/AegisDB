@@ -148,24 +148,25 @@ class ApplyAgent:
         Dry run — no DB mutation.
         Logs exactly what WOULD have happened, writes audit row.
         """
+        table_name = decision.table_name
+        fix_sql = decision.fix_sql.replace("{table}", f'"{table_name}"')
+        confidence = _extract_confidence(decision.diagnosis_result_json)
+        categories = _extract_categories(decision.diagnosis_result_json)
+
         logger.info(
-            f"[ApplyAgent][DRY RUN] Would execute on {decision.table_name}:\n"
-            f"  SQL: {decision.fix_sql}\n"
+            f"[ApplyAgent][DRY RUN] Would execute on {table_name}:\n"
+            f"  SQL: {fix_sql}\n"
             f"  Rollback: {decision.rollback_sql or 'N/A'}\n"
             f"  Sandbox rows_deleted: "
             f"{decision.sandbox_result.data_diff.rows_deleted if decision.sandbox_result.data_diff else 'N/A'}"
         )
-
-        # Parse confidence from serialized diagnosis
-        confidence = _extract_confidence(decision.diagnosis_result_json)
-        categories = _extract_categories(decision.diagnosis_result_json)
 
         audit_entry = AuditEntry(
             event_id=decision.event_id,
             table_fqn=decision.table_fqn,
             table_name=decision.table_name,
             action=ApplyAction.DRY_RUN,
-            fix_sql=decision.fix_sql,
+            fix_sql=fix_sql,
             rollback_sql=decision.rollback_sql,
             rows_affected=(
                 decision.sandbox_result.data_diff.rows_deleted
@@ -196,7 +197,9 @@ class ApplyAgent:
         Uses SET LOCAL statement_timeout to cap runaway queries.
         """
         table_name = decision.table_name
-        fix_sql = decision.fix_sql
+        # Substitute {table} placeholder with the real quoted table name
+        # This mirrors what the sandbox executor does internally
+        fix_sql = decision.fix_sql.replace("{table}", f'"{table_name}"')
         confidence = _extract_confidence(decision.diagnosis_result_json)
         categories = _extract_categories(decision.diagnosis_result_json)
         failed_tests = _extract_failed_tests(decision.diagnosis_result_json)
