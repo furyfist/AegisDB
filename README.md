@@ -1,3 +1,9 @@
+## API Docs
+
+The project API reference is available in [docs/api-reference.md](docs/api-reference.md).
+
+The live FastAPI OpenAPI UI is also available at `/docs` when the app is running.
+
 From the repo root `C:\Users\himan\OneDrive\Desktop\aegisDB`, use this now:
 
 ```powershell
