@@ -121,3 +121,119 @@ async def toggle_dry_run():
         "dry_run": settings.dry_run,
         "message": f"Apply agent now in {mode} mode",
     }
+
+@router.get("/tables/live")
+async def get_live_table_data(
+    connection_id: str,
+    table_name: str,
+    schema: str = "public",
+    limit: int = 100,
+):
+    """
+    Returns live rows from a connected table.
+    Anomaly columns sourced from latest profiling report.
+    Column metadata from information_schema.
+    """
+    from src.db.connection_registry import get_connection
+    from src.db.profiling_store import get_profiling_report
+    import asyncpg
+
+    if limit > 500:
+        limit = 500
+
+    # Get connection record (has connection_hint + profiling_report_id)
+    conn_record = await get_connection(connection_id)
+    if not conn_record:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    # We need credentials — not stored, so we read from env as fallback
+    # For connected target DB, use TARGET_DB_* env vars
+    from src.core.config import settings
+    connection_url = (
+        f"postgresql://{settings.target_db_user}:{settings.target_db_password}"
+        f"@{settings.target_db_host}:{settings.target_db_port}/{conn_record['db_name']}"
+    )
+
+    try:
+        conn = await asyncpg.connect(connection_url, timeout=10)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB connection failed: {str(e)}")
+
+    try:
+        # 1. Column metadata from information_schema
+        col_rows = await conn.fetch("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = $2
+            ORDER BY ordinal_position
+        """, schema, table_name)
+
+        columns = [
+            {
+                "name":     r["column_name"],
+                "type":     r["data_type"],
+                "nullable": r["is_nullable"] == "YES",
+            }
+            for r in col_rows
+        ]
+
+        if not columns:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Table '{schema}.{table_name}' not found"
+            )
+
+        # 2. Total row count
+        total_rows = await conn.fetchval(
+            f'SELECT COUNT(*) FROM "{schema}"."{table_name}"'
+        )
+
+        # 3. Live rows
+        rows_raw = await conn.fetch(
+            f'SELECT * FROM "{schema}"."{table_name}" LIMIT $1', limit
+        )
+        rows = [dict(r) for r in rows_raw]
+
+        # Serialize non-JSON-safe types (dates, decimals, etc.)
+        import datetime, decimal
+        def _serialize(v):
+            if isinstance(v, (datetime.date, datetime.datetime)):
+                return v.isoformat()
+            if isinstance(v, decimal.Decimal):
+                return float(v)
+            return v
+
+        rows = [
+            {k: _serialize(v) for k, v in row.items()}
+            for row in rows
+        ]
+
+    finally:
+        await conn.close()
+
+    # 4. Anomaly columns from latest profiling report
+    anomaly_columns: list[str] = []
+    if conn_record.get("profiling_report_id"):
+        try:
+            report = await get_profiling_report(conn_record["profiling_report_id"])
+            if report:
+                for t in (report.get("tables") or []):
+                    if t.get("table_name") == table_name:
+                        anomaly_columns = [
+                            a["column_name"]
+                            for a in (t.get("anomalies") or [])
+                        ]
+                        break
+        except Exception:
+            pass  # Non-fatal — just won't highlight columns
+
+    return {
+        "table_name":      table_name,
+        "schema":          schema,
+        "columns":         columns,
+        "rows":            rows,
+        "total_rows":      total_rows,
+        "returned_rows":   len(rows),
+        "anomaly_columns": anomaly_columns,
+        "last_profiled_at": conn_record.get("last_profiled_at"),
+    }
