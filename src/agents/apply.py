@@ -392,51 +392,66 @@ def _extract_categories(diagnosis_json: str) -> list[str]:
         return []
 
 
-def _extract_failed_tests(diagnosis_json: str) -> list[FailedTest]:
+def _extract_failed_tests(self, decision: RepairDecision) -> list:
     """
-    Extract failed tests from diagnosis JSON.
-    The apply agent uses this for post-apply assertions.
-    In Phase A this still reads from diagnosis JSON — the apply agent
-    receives a RepairDecision which contains the diagnosis but not the
-    original event. A proper fix would store the event_id on the
-    RepairDecision and look it up, but for now the diagnosis categories
-    are enough to run the correct assertions.
+    Derives FailedTest objects dynamically from diagnosis_json.
+    No hardcoded column map — works for any schema.
     """
+    import re, json
+
+    failed_tests = []
+
     try:
-        data = json.loads(diagnosis_json)
-        categories = data.get("failure_categories", [])
-        root_cause = data.get("root_cause", "")
-
-        # These are the actual assertion functions in validator.py
-        # Map category → test name that validator.py recognizes
-        _assertion_map = {
-            "null_violation":        "columnValuesToBeNotNull",
-            "range_violation":       "columnValuesToBeBetween",
-            "uniqueness_violation":  "columnValuesToBeUnique",
-            "referential_integrity": "columnValuesToBeNotNull",
-            "format_violation":      "columnValuesToMatchRegex",
-        }
-
-        _col_map = {
-            "null_violation":        "customer_id",
-            "range_violation":       "amount",
-            "uniqueness_violation":  "email",
-            "referential_integrity": "customer_id",
-            "format_violation":      "email",
-        }
-
-        return [
-            FailedTest(
-                test_name=_assertion_map.get(cat, cat),
-                test_fqn=f"post_apply.{cat}",
-                column_name=_col_map.get(cat, "id"),
-                failure_reason=root_cause,
-                status=TestStatus.FAILED,
-            )
-            for cat in categories
-        ]
+        diag = json.loads(decision.diagnosis_json or "{}")
     except Exception:
-        return []
+        return failed_tests
+
+    fix_sql   = (diag.get("fix_sql") or "").lower()
+    categories = diag.get("failure_categories") or []
+    table_name = decision.table_name
+
+    # --- extract columns from fix_sql (same logic as repair.py fallback) ---
+    columns: list[str] = []
+
+    columns += re.findall(r"where\s+(\w+)\s+is\s+(?:not\s+)?null", fix_sql)
+    columns += re.findall(r"where\s+(\w+)\s*[<>=!]",               fix_sql)
+    columns += re.findall(r"set\s+(\w+)\s*=",                       fix_sql)
+    columns += re.findall(r"and\s+(\w+)\s+is\s+(?:not\s+)?null",   fix_sql)
+    columns += re.findall(r"and\s+(\w+)\s*[<>=!]",                  fix_sql)
+
+    _sql_keywords = {
+        "null", "not", "and", "or", "where", "set",
+        "from", "table", "select", "true", "false",
+        "is", "in", "like", "between", "exists",
+    }
+    columns = list(dict.fromkeys(
+        c for c in columns if c not in _sql_keywords
+    ))
+
+    # --- build assertion map dynamically ---
+    # Map failure category → assertion type used in validator.py
+    _cat_to_assertion = {
+        "null_violation":       "not_null",
+        "range_violation":      "range",
+        "uniqueness_violation": "unique",
+        "format_violation":     "format",
+        "referential_integrity":"referential",
+        "schema_drift":         "schema",
+    }
+
+    primary_category = categories[0].lower() if categories else "null_violation"
+    assertion_type   = _cat_to_assertion.get(primary_category, "not_null")
+
+    for col in columns:
+        failed_tests.append({
+            "column_name":     col,
+            "assertion_type":  assertion_type,
+            "table_name":      table_name,
+            "failure_category": primary_category,
+        })
+
+    # If nothing extracted, return empty — validator will skip assertions
+    return failed_tests
 
 # Module-level singleton
 apply_agent = ApplyAgent()

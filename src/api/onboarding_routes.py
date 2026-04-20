@@ -259,24 +259,91 @@ async def list_all_connections():
 @router.post("/connections/{connection_id}/re-profile")
 async def re_profile_connection(
     connection_id: str,
+    request: Request,
     background_tasks: BackgroundTasks,
 ):
     """
-    Re-run profiling on an already-connected database.
-    Useful after data changes or to get fresh anomaly counts.
+    Re-profiles an existing connection.
+    Accepts credentials in body since they are not persisted (Gap 7.2).
     """
-    conn = await get_connection(connection_id)
-    if not conn:
-        raise HTTPException(status_code=404, detail="Connection not found")
-    if conn.status == ConnectionStatus.PROFILING:
-        return {"message": "Profiling already in progress"}
+    body = await request.json()
 
-    # We don't store credentials — user must provide them again
-    # In a real product, credentials would be in a secrets manager
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "Re-profiling requires credentials. "
-            "Use POST /api/v1/connect with the same credentials."
-        ),
+    # Validate required fields
+    required = ["host", "port", "database", "username", "password"]
+    missing = [f for f in required if f not in body]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required fields: {missing}. "
+                   f"Credentials are not stored and must be re-supplied.",
+        )
+
+    # Check connection exists
+    conn_record = await connection_registry.get_connection(connection_id)
+    if not conn_record:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    host     = body["host"]
+    port     = int(body["port"])
+    database = body["database"]
+    username = body["username"]
+    password = body["password"]
+    schemas  = body.get("schemas", ["public"])
+
+    # Test credentials synchronously before starting background work
+    connection_url = f"postgresql://{username}:{password}@{host}:{port}/{database}"
+    try:
+        import asyncpg
+        test_conn = await asyncpg.connect(connection_url, timeout=10)
+        await test_conn.close()
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Connection failed: {str(e)}"
+        )
+
+    # Mark as profiling
+    await connection_registry.update_connection(
+        connection_id,
+        {"status": "profiling"},
     )
+
+    async def _run_reprofiling():
+        try:
+            from src.agents.profiler import ProfilerAgent
+            from src.db.profiling_store import save_profiling_report
+
+            profiler  = ProfilerAgent()
+            report    = await profiler.profile_database(
+                connection_url=connection_url,
+                schemas=schemas,
+                table_limit=50,
+            )
+
+            report_id = await save_profiling_report(report)
+
+            await connection_registry.update_connection(
+                connection_id,
+                {
+                    "status":               "ready",
+                    "profiling_report_id":  report_id,
+                    "total_anomalies":      report.total_anomalies,
+                    "critical_count":       report.critical_count,
+                    "tables_found":         len(report.tables),
+                    "last_profiled_at":     "now()",
+                    "error":                None,
+                },
+            )
+        except Exception as e:
+            await connection_registry.update_connection(
+                connection_id,
+                {"status": "failed", "error": str(e)},
+            )
+
+    background_tasks.add_task(_run_reprofiling)
+
+    return {
+        "connection_id": connection_id,
+        "status":        "profiling",
+        "message":       "Re-profiling started. Poll GET /api/v1/connections/{id} for status.",
+    }
