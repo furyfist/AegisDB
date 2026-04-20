@@ -62,6 +62,9 @@ async def save_report(report: ProfilingReport) -> bool:
     if not _profiling_engine:
         return False
     try:
+        report_data_str = json.dumps(
+            report.model_dump(mode="json"), default=str
+        )
         async with _profiling_engine.begin() as conn:
             await conn.execute(
                 text("""
@@ -74,7 +77,7 @@ async def save_report(report: ProfilingReport) -> bool:
                         :report_id, :connection_hint, :status,
                         :tables_scanned, :total_anomalies,
                         :critical_count, :warning_count,
-                        :duration_ms, :report_data::jsonb
+                        :duration_ms, CAST(:report_data AS jsonb)
                     )
                     ON CONFLICT (report_id) DO UPDATE SET
                         status          = EXCLUDED.status,
@@ -90,9 +93,7 @@ async def save_report(report: ProfilingReport) -> bool:
                     "critical_count":  report.critical_count,
                     "warning_count":   report.warning_count,
                     "duration_ms":     report.duration_ms,
-                    "report_data":     json.dumps(
-                        report.model_dump(mode="json"), default=str
-                    ),
+                    "report_data":     report_data_str,
                 },
             )
         logger.info(
