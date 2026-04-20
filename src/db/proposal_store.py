@@ -1,5 +1,6 @@
 import json
 import logging
+import decimal
 from datetime import datetime
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncEngine
 from sqlalchemy import text
@@ -119,8 +120,8 @@ async def create_proposal(proposal: RepairProposalRecord) -> bool:
                     "rows_before":        proposal.rows_before,
                     "rows_after":         proposal.rows_after,
                     "rows_affected":      proposal.rows_affected,
-                    "sample_before":      json.dumps(proposal.sample_before),
-                    "sample_after":       json.dumps(proposal.sample_after),
+                    "sample_before":  json.dumps(proposal.sample_before, default=_json_default),
+                    "sample_after":   json.dumps(proposal.sample_after, default=_json_default),
                     "status":             proposal.status.value,
                     "created_at":         proposal.created_at,
                     "diagnosis_json":     proposal.diagnosis_json,
@@ -136,6 +137,14 @@ async def create_proposal(proposal: RepairProposalRecord) -> bool:
         logger.error(f"[ProposalStore] Create failed: {e}")
         return False
 
+
+def _json_default(obj):
+    """Handle types that json.dumps can't serialize by default."""
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    return str(obj)
 
 async def update_proposal_status(
     proposal_id: str,

@@ -63,21 +63,17 @@ async def init_event_store():
 
 
 async def write_event(event: EnrichedFailureEvent) -> bool:
-    """
-    Persist the full enriched event as JSONB.
-    Called immediately after enrichment in the webhook background task.
-    Uses ON CONFLICT DO UPDATE so re-fired webhooks don't create duplicates.
-    Never raises — event store failure must not block the pipeline.
-    """
     if not _event_engine:
         logger.warning("[EventStore] Engine not initialized — skipping write")
         return False
 
-    # Extract table name from FQN — last segment
     parts = event.table_fqn.split(".")
     table_name = parts[-1] if parts else event.table_fqn
 
     try:
+        event_data_str = json.dumps(
+            event.model_dump(mode="json"), default=str
+        )
         async with _event_engine.begin() as conn:
             await conn.execute(
                 text("""
@@ -85,7 +81,7 @@ async def write_event(event: EnrichedFailureEvent) -> bool:
                         (event_id, table_fqn, table_name, enrichment_ok, severity, event_data)
                     VALUES
                         (:event_id, :table_fqn, :table_name, :enrichment_ok, :severity,
-                         :event_data::jsonb)
+                         CAST(:event_data AS jsonb))
                     ON CONFLICT (event_id) DO UPDATE SET
                         enrichment_ok = EXCLUDED.enrichment_ok,
                         event_data    = EXCLUDED.event_data
@@ -96,9 +92,7 @@ async def write_event(event: EnrichedFailureEvent) -> bool:
                     "table_name":    table_name,
                     "enrichment_ok": event.enrichment_success,
                     "severity":      event.severity.value,
-                    "event_data":    json.dumps(
-                        event.model_dump(mode="json"), default=str
-                    ),
+                    "event_data":    event_data_str,
                 },
             )
         logger.info(f"[EventStore] Written event={event.event_id}")

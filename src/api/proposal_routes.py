@@ -2,7 +2,7 @@ import json
 import logging
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-
+import decimal
 from src.core.models import ProposalStatus, DiagnosisResult, EnrichedFailureEvent
 from src.core.config import settings
 from src.db.proposal_store import (
@@ -20,6 +20,12 @@ class DecisionRequest(BaseModel):
     decided_by: str = "user"
 
 
+def _json_default(obj):
+    if isinstance(obj, decimal.Decimal):
+        return float(obj)
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    return str(obj)
 @router.get("/proposals")
 async def list_all_proposals(
     status: str | None = Query(
@@ -305,8 +311,8 @@ async def re_sandbox_proposal(proposal_id: str):
                         "rows_before":    rows_before,
                         "rows_after":     rows_after,
                         "rows_affected":  rows_affected,
-                        "sample_before":  json.dumps(sample_before),
-                        "sample_after":   json.dumps(sample_after),
+                        "sample_before":  json.dumps(sample_before, default=_json_default),
+                        "sample_after":   json.dumps(sample_after, default=_json_default),
                     },
                 )
 
