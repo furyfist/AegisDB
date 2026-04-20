@@ -56,17 +56,21 @@ def _assign_severity(failed_tests: list[FailedTest], table_fqn: str) -> FailureS
 
 async def _enrich_and_publish(event: EnrichedFailureEvent):
     """
-    Background task: enrich with OM schema/lineage context,
-    then publish to Redis Stream.
-    Runs after the webhook already returned 200 to OM.
+    Background task: enrich → write to event store → publish to Redis.
+    Event store write happens BEFORE Redis publish so repair agent
+    can always look up the full event by event_id.
     """
+    from src.db.event_store import write_event
+
     try:
         context = await om_client.get_table_context(event.table_fqn)
         if context:
             event.table_context = context
             event.enrichment_success = True
-            logger.info(f"Enriched {event.table_fqn} — {len(context.columns)} columns, "
-                        f"{len(context.upstream_tables)} upstream tables")
+            logger.info(
+                f"Enriched {event.table_fqn} — {len(context.columns)} columns, "
+                f"{len(context.upstream_tables)} upstream tables"
+            )
         else:
             event.enrichment_error = "Table not found in OpenMetadata"
             logger.warning(f"Could not enrich {event.table_fqn}")
@@ -75,13 +79,15 @@ async def _enrich_and_publish(event: EnrichedFailureEvent):
         event.enrichment_error = str(e)
         logger.error(f"Enrichment failed for {event.table_fqn}: {e}")
 
-    # Publish regardless — downstream agents handle partial enrichment
+    # Write to event store FIRST — repair agent needs this
+    await write_event(event)
+
+    # Then publish to Redis stream for pipeline pickup
     try:
         msg_id = await event_bus.publish(event)
         logger.info(f"Event {event.event_id} published → Redis msg {msg_id}")
     except Exception as e:
         logger.error(f"Failed to publish event {event.event_id}: {e}")
-
 
 @router.post("/webhook/om-test-failure")
 async def receive_om_webhook(

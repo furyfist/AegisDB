@@ -26,9 +26,9 @@ CREATE TABLE IF NOT EXISTS _aegisdb_audit (
     confidence           FLOAT        DEFAULT 0.0,
     failure_categories   TEXT[]       DEFAULT ARRAY[]::TEXT[],
     applied_at           TIMESTAMPTZ  DEFAULT NOW(),
-    post_apply_json      JSONB        DEFAULT '[]'::jsonb,
+    post_apply_json      JSONB        DEFAULT CAST('[]' AS jsonb),
     error                TEXT,
-    metadata_json        JSONB        DEFAULT '{}'::jsonb
+    metadata_json        JSONB        DEFAULT CAST('{}' AS jsonb)
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_event_id
@@ -76,9 +76,9 @@ async def init_audit_table():
                     confidence           FLOAT        DEFAULT 0.0,
                     failure_categories   TEXT[]       DEFAULT ARRAY[]::TEXT[],
                     applied_at           TIMESTAMPTZ  DEFAULT NOW(),
-                    post_apply_json      JSONB        DEFAULT '[]'::jsonb,
+                    post_apply_json      JSONB        DEFAULT CAST('[]' AS jsonb),
                     error                TEXT,
-                    metadata_json        JSONB        DEFAULT '{}'::jsonb
+                    metadata_json        JSONB        DEFAULT CAST('{}' AS jsonb)
                 )
             """))
 

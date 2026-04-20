@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 from pydantic import BaseModel, Field
-
+import uuid
 
 class FailureSeverity(str, Enum):
     LOW = "low"
@@ -297,3 +297,161 @@ class ApplyResult(BaseModel):
     audit_id: int | None = None
     error: str | None = None
     completed_at: datetime = Field(default_factory=datetime.now)
+
+# ── Profiling Engine 
+
+class AnomalySeverity(str, Enum):
+    INFO     = "info"
+    WARNING  = "warning"
+    CRITICAL = "critical"
+
+
+class ColumnAnomaly(BaseModel):
+    """
+    One detected anomaly on one column.
+    Maps directly to a FailureCategory so the existing
+    Detector → Diagnosis → Repair pipeline can process it.
+    """
+    column_name:    str
+    anomaly_type:   FailureCategory
+    severity:       AnomalySeverity
+    affected_rows:  int
+    total_rows:     int
+    rate:           float            # affected_rows / total_rows
+    description:    str
+    sample_values:  list[Any] = []  # up to 5 example bad values
+
+
+class TableProfile(BaseModel):
+    """Profiling result for a single table."""
+    table_name:            str
+    schema_name:           str
+    total_rows:            int
+    total_columns:         int
+    anomalies:             list[ColumnAnomaly] = []
+    profiled_at:           datetime = Field(default_factory=datetime.now)
+    profiling_duration_ms: int = 0
+
+
+class ProfilingReport(BaseModel):
+    """
+    Full profiling output for a database connection.
+    Returned by POST /api/v1/profile and stored in _aegisdb_profiling_reports.
+    """
+    report_id:       str = Field(default_factory=lambda: str(uuid.uuid4()) if True else "")
+    connection_hint: str = ""        # host:port/db — no credentials stored
+    profiled_at:     datetime = Field(default_factory=datetime.now)
+    tables_scanned:  int = 0
+    total_anomalies: int = 0
+    critical_count:  int = 0
+    warning_count:   int = 0
+    tables:          list[TableProfile] = []
+    status:          str = "completed"  # completed | failed | partial
+    error:           str | None = None
+    duration_ms:     int = 0
+
+# ── Onboarding 
+
+class ConnectionStatus(str, Enum):
+    PENDING    = "pending"
+    CONNECTED  = "connected"
+    INGESTING  = "ingesting"
+    PROFILING  = "profiling"
+    READY      = "ready"
+    FAILED     = "failed"
+
+
+class DatabaseConnection(BaseModel):
+    """
+    A registered database connection in AegisDB.
+    Credentials are never stored — only the connection URL hint.
+    """
+    connection_id:    str = Field(
+        default_factory=lambda: str(uuid.uuid4())
+    )
+    service_name:     str           # name registered in OpenMetadata
+    connection_hint:  str           # host:port/db — no credentials
+    db_name:          str
+    schema_names:     list[str] = ["public"]
+    status:           ConnectionStatus = ConnectionStatus.PENDING
+    om_service_fqn:   str = ""      # FQN assigned by OM
+    profiling_report_id: str | None = None
+    tables_found:     int = 0
+    total_anomalies:  int = 0
+    critical_count:   int = 0
+    registered_at:    datetime = Field(default_factory=datetime.now)
+    last_profiled_at: datetime | None = None
+    error:            str | None = None
+
+
+class ConnectRequest(BaseModel):
+    """Body for POST /api/v1/connect"""
+    host:         str
+    port:         int = 5432
+    database:     str
+    username:     str
+    password:     str
+    schemas:      list[str] = ["public"]
+    service_name: str | None = None  # auto-generated if not provided
+
+
+class ConnectResponse(BaseModel):
+    connection_id:   str
+    service_name:    str
+    connection_hint: str
+    status:          ConnectionStatus
+    tables_found:    int
+    total_anomalies: int
+    critical_count:  int
+    profiling_report_id: str | None
+    message:         str
+
+# ── Phase D models — Approval Workflow 
+
+class ProposalStatus(str, Enum):
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED         = "approved"
+    REJECTED         = "rejected"
+    EXECUTING        = "executing"   # repair agent picked it up
+    COMPLETED        = "completed"   # apply agent finished
+    FAILED           = "failed"
+
+
+class RepairProposalRecord(BaseModel):
+    """
+    Created by the diagnosis consumer when confidence >= threshold.
+    Sits pending until a user explicitly approves or rejects it.
+    On approval the full DiagnosisResult is published to aegisdb:repair
+    and the existing repair → sandbox → apply pipeline runs unchanged.
+    """
+    proposal_id:        str = Field(
+        default_factory=lambda: str(uuid.uuid4())
+    )
+    event_id:           str
+    table_fqn:          str
+    table_name:         str
+    failure_categories: list[str] = []
+    root_cause:         str
+    confidence:         float
+    fix_sql:            str
+    fix_description:    str
+    rollback_sql:       str | None = None
+    estimated_rows:     int | None = None
+
+    # Sandbox preview — shown to user before they approve
+    sandbox_passed:     bool = False
+    rows_before:        int = 0
+    rows_after:         int = 0
+    rows_affected:      int = 0
+    sample_before:      list[dict] = []
+    sample_after:       list[dict] = []
+
+    status:             ProposalStatus = ProposalStatus.PENDING_APPROVAL
+    created_at:         datetime = Field(default_factory=datetime.now)
+    decided_at:         datetime | None = None
+    decision_by:        str = "system"
+    rejection_reason:   str | None = None
+
+    # Full serialized objects for pipeline re-entry on approval
+    diagnosis_json:     str = ""   # serialized DiagnosisResult
+    event_json:         str = ""   # serialized EnrichedFailureEvent

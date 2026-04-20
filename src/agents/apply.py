@@ -148,24 +148,25 @@ class ApplyAgent:
         Dry run — no DB mutation.
         Logs exactly what WOULD have happened, writes audit row.
         """
+        table_name = decision.table_name
+        fix_sql = decision.fix_sql.replace("{table}", f'"{table_name}"')
+        confidence = _extract_confidence(decision.diagnosis_result_json)
+        categories = _extract_categories(decision.diagnosis_result_json)
+
         logger.info(
-            f"[ApplyAgent][DRY RUN] Would execute on {decision.table_name}:\n"
-            f"  SQL: {decision.fix_sql}\n"
+            f"[ApplyAgent][DRY RUN] Would execute on {table_name}:\n"
+            f"  SQL: {fix_sql}\n"
             f"  Rollback: {decision.rollback_sql or 'N/A'}\n"
             f"  Sandbox rows_deleted: "
             f"{decision.sandbox_result.data_diff.rows_deleted if decision.sandbox_result.data_diff else 'N/A'}"
         )
-
-        # Parse confidence from serialized diagnosis
-        confidence = _extract_confidence(decision.diagnosis_result_json)
-        categories = _extract_categories(decision.diagnosis_result_json)
 
         audit_entry = AuditEntry(
             event_id=decision.event_id,
             table_fqn=decision.table_fqn,
             table_name=decision.table_name,
             action=ApplyAction.DRY_RUN,
-            fix_sql=decision.fix_sql,
+            fix_sql=fix_sql,
             rollback_sql=decision.rollback_sql,
             rows_affected=(
                 decision.sandbox_result.data_diff.rows_deleted
@@ -196,7 +197,9 @@ class ApplyAgent:
         Uses SET LOCAL statement_timeout to cap runaway queries.
         """
         table_name = decision.table_name
-        fix_sql = decision.fix_sql
+        # Substitute {table} placeholder with the real quoted table name
+        # This mirrors what the sandbox executor does internally
+        fix_sql = decision.fix_sql.replace("{table}", f'"{table_name}"')
         confidence = _extract_confidence(decision.diagnosis_result_json)
         categories = _extract_categories(decision.diagnosis_result_json)
         failed_tests = _extract_failed_tests(decision.diagnosis_result_json)
@@ -391,25 +394,40 @@ def _extract_categories(diagnosis_json: str) -> list[str]:
 
 def _extract_failed_tests(diagnosis_json: str) -> list[FailedTest]:
     """
-    Reconstruct FailedTest list from diagnosis JSON for post-apply assertions.
-    Matches what the repair agent originally passed to the sandbox.
+    Extract failed tests from diagnosis JSON.
+    The apply agent uses this for post-apply assertions.
+    In Phase A this still reads from diagnosis JSON — the apply agent
+    receives a RepairDecision which contains the diagnosis but not the
+    original event. A proper fix would store the event_id on the
+    RepairDecision and look it up, but for now the diagnosis categories
+    are enough to run the correct assertions.
     """
     try:
         data = json.loads(diagnosis_json)
         categories = data.get("failure_categories", [])
         root_cause = data.get("root_cause", "")
 
+        # These are the actual assertion functions in validator.py
+        # Map category → test name that validator.py recognizes
+        _assertion_map = {
+            "null_violation":        "columnValuesToBeNotNull",
+            "range_violation":       "columnValuesToBeBetween",
+            "uniqueness_violation":  "columnValuesToBeUnique",
+            "referential_integrity": "columnValuesToBeNotNull",
+            "format_violation":      "columnValuesToMatchRegex",
+        }
+
         _col_map = {
-            "null_violation": "customer_id",
-            "range_violation": "amount",
-            "uniqueness_violation": "email",
+            "null_violation":        "customer_id",
+            "range_violation":       "amount",
+            "uniqueness_violation":  "email",
             "referential_integrity": "customer_id",
-            "format_violation": "email",
+            "format_violation":      "email",
         }
 
         return [
             FailedTest(
-                test_name=cat,
+                test_name=_assertion_map.get(cat, cat),
                 test_fqn=f"post_apply.{cat}",
                 column_name=_col_map.get(cat, "id"),
                 failure_reason=root_cause,
@@ -419,7 +437,6 @@ def _extract_failed_tests(diagnosis_json: str) -> list[FailedTest]:
         ]
     except Exception:
         return []
-
 
 # Module-level singleton
 apply_agent = ApplyAgent()

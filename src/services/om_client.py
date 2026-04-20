@@ -33,8 +33,24 @@ class OpenMetadataClient:
         return b64encode(password.encode("utf-8")).decode("utf-8")
 
     async def _get_token(self) -> str:
+        """
+        Fetch JWT token. Clear cache and retry on first failure —
+        handles expired tokens without a restart.
+        """
         if self._token:
-            return self._token
+            # Validate cached token is still working with a lightweight ping
+            try:
+                resp = await self._client.get(
+                    "/api/v1/system/version",
+                    headers={"Authorization": f"Bearer {self._token}"},
+                )
+                if resp.status_code == 200:
+                    return self._token
+                # Token expired or invalid — clear and re-fetch
+                logger.info("OM token expired — re-authenticating")
+                self._token = None
+            except Exception:
+                self._token = None
 
         import base64
         encoded_password = base64.b64encode(
@@ -48,7 +64,11 @@ class OpenMetadataClient:
         )
         resp.raise_for_status()
         data = resp.json()
-        self._token = data.get("accessToken") or data.get("jwtToken") or data.get("token")
+        self._token = (
+            data.get("accessToken")
+            or data.get("jwtToken")
+            or data.get("token")
+        )
         if not self._token:
             raise ValueError(
                 f"No token in OM login response. Keys: {list(data.keys())}"

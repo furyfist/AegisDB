@@ -84,10 +84,19 @@ class RepairAgent:
         try:
             diagnosis = DiagnosisResult.model_validate_json(fields["data"])
 
-            # We need the original event for context — reconstruct minimal version
-            # In production you'd store events in Redis or a DB for lookup
-            # For now build a minimal EnrichedFailureEvent from diagnosis data
-            event = _minimal_event_from_diagnosis(diagnosis, fields)
+            # Look up the original enriched event from the event store
+            # This gives us the real column names, real failed tests,
+            # real table context — no hardcoded guessing
+            from src.db.event_store import get_event
+            event = await get_event(event_id)
+
+            if not event:
+                # Fallback: build minimal event from diagnosis if store lookup fails
+                logger.warning(
+                    f"[RepairAgent] Event {event_id} not in store — "
+                    f"using diagnosis fallback"
+                )
+                event = _fallback_event_from_diagnosis(diagnosis, fields)
 
             decision = await self._run_with_retries(event, diagnosis)
             await self._route_decision(decision)
@@ -210,35 +219,6 @@ class RepairAgent:
             await self._redis.aclose()
 
 
-def _minimal_event_from_diagnosis(
-    diagnosis: DiagnosisResult,
-    fields: dict,
-) -> EnrichedFailureEvent:
-    """
-    Reconstruct enough of EnrichedFailureEvent to run the sandbox.
-    In Phase 5 we'll add an event store for proper lookup.
-    """
-    from src.core.models import EnrichedFailureEvent, FailedTest, TestStatus
-
-    table_fqn = fields.get("table_fqn", "unknown")
-
-    failed_tests = []
-    for cat in diagnosis.failure_categories:
-        failed_tests.append(FailedTest(
-            test_name=cat.value,
-            test_fqn=f"{table_fqn}.{cat.value}",
-            column_name=_guess_column(cat.value, table_fqn),
-            failure_reason=diagnosis.root_cause,
-            status=TestStatus.FAILED,
-        ))
-
-    return EnrichedFailureEvent(
-        event_id=diagnosis.event_id,
-        table_fqn=table_fqn,
-        failed_tests=failed_tests,
-    )
-
-
 def _guess_column(category: str, table_fqn: str) -> str:
     """Heuristic column guess from category — good enough for sandbox."""
     mapping = {
@@ -250,5 +230,43 @@ def _guess_column(category: str, table_fqn: str) -> str:
     }
     return mapping.get(category, "id")
 
+def _fallback_event_from_diagnosis(
+    diagnosis: DiagnosisResult,
+    fields: dict,
+) -> EnrichedFailureEvent:
+    """
+    Last-resort fallback when event store lookup fails.
+    Uses diagnosis data to reconstruct a minimal event.
+    Should rarely fire in practice.
+    """
+    from src.core.models import FailedTest, TestStatus
+
+    table_fqn = fields.get("table_fqn", "unknown")
+
+    # Column map is a fallback only — real data comes from event store
+    _col_map = {
+        "null_violation":        "id",
+        "range_violation":       "amount",
+        "uniqueness_violation":  "email",
+        "referential_integrity": "id",
+        "format_violation":      "email",
+    }
+
+    failed_tests = [
+        FailedTest(
+            test_name=cat.value,
+            test_fqn=f"{table_fqn}.{cat.value}",
+            column_name=_col_map.get(cat.value, "id"),
+            failure_reason=diagnosis.root_cause,
+            status=TestStatus.FAILED,
+        )
+        for cat in diagnosis.failure_categories
+    ]
+
+    return EnrichedFailureEvent(
+        event_id=diagnosis.event_id,
+        table_fqn=table_fqn,
+        failed_tests=failed_tests,
+    )
 
 repair_agent = RepairAgent()
