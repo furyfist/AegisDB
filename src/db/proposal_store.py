@@ -99,7 +99,7 @@ async def create_proposal(proposal: RepairProposalRecord) -> bool:
                         :fix_sql, :fix_description, :rollback_sql,
                         :estimated_rows, :sandbox_passed,
                         :rows_before, :rows_after, :rows_affected,
-                        :sample_before::jsonb, :sample_after::jsonb,
+                        CAST(:sample_before AS jsonb), CAST(:sample_after AS jsonb),
                         :status, :created_at, :diagnosis_json, :event_json
                     )
                     ON CONFLICT (proposal_id) DO NOTHING
@@ -120,8 +120,12 @@ async def create_proposal(proposal: RepairProposalRecord) -> bool:
                     "rows_before":        proposal.rows_before,
                     "rows_after":         proposal.rows_after,
                     "rows_affected":      proposal.rows_affected,
-                    "sample_before":  json.dumps(proposal.sample_before, default=_json_default),
-                    "sample_after":   json.dumps(proposal.sample_after, default=_json_default),
+                    "sample_before":      json.dumps(
+                        proposal.sample_before, default=_json_default
+                    ),
+                    "sample_after":       json.dumps(
+                        proposal.sample_after, default=_json_default
+                    ),
                     "status":             proposal.status.value,
                     "created_at":         proposal.created_at,
                     "diagnosis_json":     proposal.diagnosis_json,

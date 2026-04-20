@@ -301,8 +301,8 @@ async def re_sandbox_proposal(proposal_id: str):
                             rows_before    = :rows_before,
                             rows_after     = :rows_after,
                             rows_affected  = :rows_affected,
-                            sample_before  = :sample_before::jsonb,
-                            sample_after   = :sample_after::jsonb
+                            sample_before  = CAST(:sample_before AS jsonb),
+                            sample_after   = CAST(:sample_after AS jsonb)
                         WHERE proposal_id = :proposal_id
                     """),
                     {
