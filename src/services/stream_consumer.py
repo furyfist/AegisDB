@@ -47,6 +47,17 @@ class StreamConsumer:
             else:
                 raise
 
+    def stop(self):
+        """Signal the consumer loop to exit after the current message."""
+        self._running = False
+
+    async def close(self):
+        """Close the underlying Redis connection."""
+        if self._redis:
+            await self._redis.aclose()
+            self._redis = None
+            logger.info("[StreamConsumer] Redis connection closed")
+
     async def start(self):
         """Main consumer loop. Runs until stop() is called."""
         self._running = True
