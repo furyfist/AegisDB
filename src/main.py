@@ -1,8 +1,11 @@
 import asyncio
 import logging
+import time
 import uvicorn
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.api.webhook import router as webhook_router
 from src.api.dashboard import router as dashboard_router
@@ -176,6 +179,42 @@ app = FastAPI(
     version="0.4.0",
     lifespan=lifespan,
 )
+
+# ── CORS: allow the frontend dev server at localhost:3000 ──────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── Global unhandled-exception handler — no raw tracebacks to client ───────
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        f"[Unhandled] {request.method} {request.url.path} → {exc}",
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "error": str(exc)},
+    )
+
+
+# ── Simple request logger middleware ──────────────────────────────────────
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = round((time.time() - start) * 1000)
+    logger.info(
+        f"{request.method} {request.url.path} → {response.status_code} "
+        f"({duration_ms}ms)"
+    )
+    return response
+
 
 app.include_router(webhook_router, prefix="/api/v1", tags=["Webhook"])
 app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])

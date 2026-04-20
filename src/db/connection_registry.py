@@ -158,7 +158,7 @@ async def list_connections() -> list[dict]:
                 for f in ("registered_at", "last_profiled_at"):
                     if d.get(f) and hasattr(d[f], "isoformat"):
                         d[f] = d[f].isoformat()
-            out.append(d)
+                out.append(d)  # fixed: was outside for-row, inside for-f (§7.12)
             return out
     except Exception as e:
         logger.error(f"[Registry] List failed: {e}")

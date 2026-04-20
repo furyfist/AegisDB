@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 import redis.asyncio as aioredis
 
 from src.core.config import settings
@@ -69,7 +69,7 @@ async def get_stream_stats():
 
     except Exception as e:
         logger.error(f"[Dashboard] Stream stats error: {e}")
-        return {"error": str(e)}
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {e}")
 
 
 @router.get("/escalations")
@@ -103,7 +103,8 @@ async def get_escalations(limit: int = Query(default=20, le=100)):
         return {"count": len(results), "escalations": results}
 
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"[Dashboard] Escalations error: {e}")
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {e}")
 
 
 @router.post("/dry-run/toggle")
