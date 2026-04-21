@@ -24,11 +24,14 @@ async def get_live_table_data(
     if not conn_record:
         raise HTTPException(status_code=404, detail="Connection not found")
 
-    # Use TARGET_DB_* env credentials against the connected db_name
+    # Replace conn_record.get("db_name") → conn_record.db_name
+    # Replace conn_record.get("profiling_report_id") → conn_record.profiling_report_id
+    # Replace conn_record.get("last_profiled_at") → conn_record.last_profiled_at
+
     connection_url = (
         f"postgresql://{settings.target_db_user}:{settings.target_db_password}"
         f"@{settings.target_db_host}:{settings.target_db_port}"
-        f"/{conn_record['db_name']}"
+        f"/{conn_record.db_name}"
     )
 
     try:
@@ -89,15 +92,16 @@ async def get_live_table_data(
 
     # Anomaly columns from latest profiling report
     anomaly_columns: list[str] = []
-    if conn_record.get("profiling_report_id"):
+    if conn_record.profiling_report_id:
         try:
-            report = await get_profiling_report(conn_record["profiling_report_id"])
+            from src.db.profiling_store import get_report
+            report = await get_report(conn_record.profiling_report_id)
             if report:
-                for t in (report.get("tables") or []):
-                    if t.get("table_name") == table_name:
+                for t in (report.tables or []):
+                    if t.table_name == table_name:
                         anomaly_columns = [
-                            a["column_name"]
-                            for a in (t.get("anomalies") or [])
+                            a.column_name
+                            for a in (t.anomalies or [])
                         ]
                         break
         except Exception:
@@ -111,5 +115,5 @@ async def get_live_table_data(
         "total_rows":      total_rows,
         "returned_rows":   len(rows),
         "anomaly_columns": anomaly_columns,
-        "last_profiled_at": conn_record.get("last_profiled_at"),
+        "last_profiled_at": conn_record.last_profiled_at.isoformat() if conn_record.last_profiled_at else None,
     }
