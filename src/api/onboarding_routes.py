@@ -301,7 +301,7 @@ async def re_profile_connection(
     async def _run_reprofiling():
         try:
             from src.agents.profiler import ProfilerAgent
-            from src.db.profiling_store import save_profiling_report
+            from src.db.profiling_store import save_report
 
             profiler = ProfilerAgent()
             report   = await profiler.profile_database(
@@ -309,7 +309,8 @@ async def re_profile_connection(
                 schemas=schemas,
                 table_limit=50,
             )
-            report_id = await save_profiling_report(report)
+            await save_report(report)
+            report_id = report.report_id
 
             await connection_registry.update_connection(
                 connection_id,

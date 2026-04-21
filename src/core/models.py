@@ -252,6 +252,10 @@ class RepairDecision(BaseModel):
     approved: bool
     rejection_reason: str | None = None
 
+    # Data snapshots for UI/audit
+    sample_before: list[dict] = []
+    sample_after: list[dict] = []
+
     # Audit
     dry_run: bool = True
 

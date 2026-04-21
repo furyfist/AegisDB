@@ -22,6 +22,25 @@ logger = logging.getLogger(__name__)
 _POSTGRES_IMAGE = "postgres:16-alpine"
 
 
+def _sanitize_rows(rows: list[dict]) -> list[dict]:
+    """Convert non-JSON-serializable types. Handles BYTEA, dates, decimals."""
+    import datetime, decimal
+    clean = []
+    for row in rows:
+        new_row = {}
+        for k, v in row.items():
+            if isinstance(v, (memoryview, bytes)):
+                new_row[k] = None
+            elif isinstance(v, (datetime.date, datetime.datetime)):
+                new_row[k] = v.isoformat()
+            elif isinstance(v, decimal.Decimal):
+                new_row[k] = float(v)
+            else:
+                new_row[k] = v
+        clean.append(new_row)
+    return clean
+
+
 def _to_psycopg2_url(conn_url: str) -> str:
     """
     testcontainers returns postgresql+psycopg2://...
@@ -115,7 +134,8 @@ def _get_sample_sync(conn_url: str, table_name: str, limit: int = 10) -> list[di
     try:
         cur.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}')
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return _sanitize_rows(rows)
     finally:
         cur.close()
         conn.close()

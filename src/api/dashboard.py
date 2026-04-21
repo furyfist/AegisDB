@@ -135,7 +135,7 @@ async def get_live_table_data(
     Column metadata from information_schema.
     """
     from src.db.connection_registry import get_connection
-    from src.db.profiling_store import get_profiling_report
+    from src.db.profiling_store import get_report as get_profiling_report
     import asyncpg
 
     if limit > 500:
@@ -245,7 +245,7 @@ async def get_connection_health(connection_id: str):
     Score computed from profiling report anomaly counts.
     """
     from src.db.connection_registry import get_connection
-    from src.db.profiling_store import get_profiling_report
+    from src.db.profiling_store import get_report as get_profiling_report
     import asyncpg
     from src.core.config import settings
 
@@ -302,7 +302,7 @@ async def get_connection_health(connection_id: str):
 @router.get("/connections/{connection_id}/health")
 async def get_connection_health(connection_id: str):
     from src.db.connection_registry import get_connection
-    from src.db.profiling_store import get_profiling_report
+    from src.db.profiling_store import get_report as get_profiling_report
 
     conn_record = await get_connection(connection_id)
     if not conn_record:

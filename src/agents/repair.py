@@ -15,6 +15,27 @@ from src.db.vector_store import vector_store
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_rows(rows: list[dict]) -> list[dict]:
+    """Strip/convert non-JSON-serializable types from DB rows."""
+    import datetime, decimal
+    clean = []
+    for row in rows:
+        new_row = {}
+        for k, v in row.items():
+            if isinstance(v, memoryview):
+                new_row[k] = None          # BYTEA → null
+            elif isinstance(v, bytes):
+                new_row[k] = None          # bytes → null
+            elif isinstance(v, (datetime.date, datetime.datetime)):
+                new_row[k] = v.isoformat()
+            elif isinstance(v, decimal.Decimal):
+                new_row[k] = float(v)
+            else:
+                new_row[k] = v
+        clean.append(new_row)
+    return clean
+
+
 class RepairAgent:
     """
     Reads the aegisdb:repair stream.
@@ -169,6 +190,11 @@ class RepairAgent:
             dry_run=settings.dry_run,
         )
 
+        # Assign sandbox results for display/audit
+        if last_result and last_result.data_diff:
+            decision.sample_before = last_result.data_diff.sample_before
+            decision.sample_after  = last_result.data_diff.sample_after
+
         # Win or lose — store in KB so future diagnoses learn from it
         if approved and proposal:
             try:
@@ -187,6 +213,10 @@ class RepairAgent:
         return decision
 
     async def _route_decision(self, decision: RepairDecision):
+        # Strip binary fields before serialization
+        decision.sample_before = _sanitize_rows(decision.sample_before or [])
+        decision.sample_after  = _sanitize_rows(decision.sample_after  or [])
+
         payload = {
             "event_id": decision.event_id,
             "table_fqn": decision.table_fqn,

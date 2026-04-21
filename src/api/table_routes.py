@@ -14,7 +14,7 @@ async def get_live_table_data(
     limit: int = 100,
 ):
     from src.db.connection_registry import get_connection
-    from src.db.profiling_store import get_profiling_report
+    from src.db.profiling_store import get_report as get_profiling_report
     from src.core.config import settings
 
     if limit > 500:
