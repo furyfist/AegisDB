@@ -69,6 +69,60 @@ async def get_proposal_detail(proposal_id: str):
             status_code=404,
             detail=f"Proposal {proposal_id} not found",
         )
+    
+    # Convert to dict for manipulation (get_proposal returns dict from DB)
+    if not isinstance(proposal, dict):
+        # If it's a model, convert to dict first
+        proposal = proposal.model_dump() if hasattr(proposal, "model_dump") else dict(proposal)
+    
+    # Enhance with display fields derived from existing data
+    import re as _re
+
+    fix_sql_lower = (proposal.get("fix_sql") or "").lower()
+    categories    = proposal.get("failure_categories") or []
+
+    # fix_type
+    if fix_sql_lower.strip().startswith("delete"):
+        fix_type = "DELETE"
+    elif fix_sql_lower.strip().startswith("update"):
+        fix_type = "UPDATE"
+    elif fix_sql_lower.strip().startswith("insert"):
+        fix_type = "INSERT"
+    else:
+        fix_type = "OTHER"
+
+    # highlighted_columns from fix_sql
+    _kw = {
+        "null","not","and","or","where","set","from",
+        "table","select","true","false","is","in",
+        "like","between","exists",
+    }
+    _cols: list[str] = []
+    _cols += _re.findall(r"where\s+(\w+)\s+is\s+(?:not\s+)?null", fix_sql_lower)
+    _cols += _re.findall(r"where\s+(\w+)\s*[<>=!]",               fix_sql_lower)
+    _cols += _re.findall(r"set\s+(\w+)\s*=",                       fix_sql_lower)
+    _cols += _re.findall(r"and\s+(\w+)\s+is\s+(?:not\s+)?null",   fix_sql_lower)
+    highlighted_columns = list(dict.fromkeys(c for c in _cols if c not in _kw))
+
+    # anomaly_type_label
+    _label_map = {
+        "null_violation":        "NULL Values",
+        "range_violation":       "Out-of-Range Values",
+        "uniqueness_violation":  "Duplicate Values",
+        "format_violation":      "Invalid Format",
+        "referential_integrity": "Referential Integrity",
+        "schema_drift":          "Schema Drift",
+    }
+    primary_cat        = categories[0].lower() if categories else "unknown"
+    anomaly_type_label = _label_map.get(primary_cat, primary_cat.replace("_", " ").title())
+
+    proposal["fix_type"]            = fix_type
+    proposal["highlighted_columns"] = highlighted_columns
+    proposal["anomaly_type_label"]  = anomaly_type_label
+    proposal["fix_sql_display"]     = (proposal.get("fix_sql") or "").replace(
+        "{table}", f'"{proposal.get("table_name", "table")}"'
+    )
+    
     return proposal
 
 

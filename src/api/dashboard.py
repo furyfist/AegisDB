@@ -121,3 +121,60 @@ async def toggle_dry_run():
         "dry_run": settings.dry_run,
         "message": f"Apply agent now in {mode} mode",
     }
+
+@router.get("/connections/{connection_id}/health")
+async def get_connection_health(connection_id: str):
+    """
+    Real-time health score for a connected database.
+    Score computed from profiling report anomaly counts.
+    """
+    from src.db.connection_registry import get_connection
+    from src.db.profiling_store import get_report
+
+    conn_record = await get_connection(connection_id)
+    if not conn_record:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    critical = conn_record.critical_count or 0
+    total = conn_record.total_anomalies or 0
+    warnings = max(0, total - critical)
+
+    if total == 0:
+        health_score = 100
+        status_label = "clean"
+    elif critical == 0:
+        health_score = max(50, 100 - (warnings * 3))
+        status_label = "partial"
+    else:
+        health_score = max(0, 100 - (critical * 10) - (warnings * 3))
+        status_label = "dirty"
+
+    tables_summary = []
+    if conn_record.profiling_report_id:
+        try:
+            report = await get_report(conn_record.profiling_report_id)
+            if report:
+                for t in (report.tables or []):
+                    anomaly_count = len(t.anomalies or [])
+                    tables_summary.append({
+                        "table_name":    t.table_name,
+                        "schema":        t.schema_name,
+                        "anomaly_count": anomaly_count,
+                        "status":        "dirty" if anomaly_count > 0 else "clean",
+                    })
+        except Exception as e:
+            logger.warning(f"[Health] Could not load profiling report: {e}")
+
+    return {
+        "connection_id":    connection_id,
+        "health_score":     health_score,
+        "status":           status_label,
+        "total_anomalies":  total,
+        "critical_count":   critical,
+        "warning_count":    warnings,
+        "tables_found":     conn_record.tables_found or 0,
+        "tables":           tables_summary,
+        "last_profiled_at": conn_record.last_profiled_at.isoformat() if conn_record.last_profiled_at else None,
+        "db_name":          conn_record.db_name,
+        "connection_hint":  conn_record.connection_hint,
+    }
