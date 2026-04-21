@@ -34,7 +34,7 @@ def _build_target_url() -> str:
 class ApplyAgent:
     """
     Reads aegisdb:apply stream.
-    
+
     DRY_RUN=true  → logs intent, no DB mutation
     DRY_RUN=false → executes fix in a transaction:
                     → post-apply verify passes → COMMIT → audit 'applied'
@@ -80,7 +80,8 @@ class ApplyAgent:
 
     async def start(self):
         self._running = True
-        logger.info(f"[ApplyAgent] Listening on '{settings.redis_apply_stream}'")
+        logger.info(
+            f"[ApplyAgent] Listening on '{settings.redis_apply_stream}'")
 
         while self._running:
             try:
@@ -192,7 +193,7 @@ class ApplyAgent:
     async def _apply_live(self, decision: RepairDecision) -> ApplyResult:
         """
         Live execution path.
-        
+
         Pattern: explicit transaction → execute fix → verify → commit or rollback.
         Uses SET LOCAL statement_timeout to cap runaway queries.
         """
@@ -202,7 +203,7 @@ class ApplyAgent:
         fix_sql = decision.fix_sql.replace("{table}", f'"{table_name}"')
         confidence = _extract_confidence(decision.diagnosis_result_json)
         categories = _extract_categories(decision.diagnosis_result_json)
-        failed_tests = _extract_failed_tests(decision.diagnosis_result_json)
+        failed_tests = self._extract_failed_tests(decision)
 
         logger.info(
             f"[ApplyAgent][LIVE] Executing fix on PRODUCTION table={table_name}"
@@ -375,6 +376,66 @@ class ApplyAgent:
         if self._engine:
             await self._engine.dispose()
 
+    def _extract_failed_tests(self, decision) -> list:
+        """
+        Derives FailedTest objects dynamically from diagnosis_json.
+        No hardcoded column map — works for any schema including Northwind.
+        """
+        import re
+        import json
+
+        failed_tests = []
+
+        try:
+            diag = json.loads(decision.diagnosis_json or "{}")
+        except Exception:
+            return failed_tests
+
+        fix_sql = (diag.get("fix_sql") or "").lower()
+        categories = diag.get("failure_categories") or []
+        table_name = decision.table_name
+
+        # Extract columns from fix_sql
+        columns: list[str] = []
+        columns += re.findall(r"where\s+(\w+)\s+is\s+(?:not\s+)?null", fix_sql)
+        columns += re.findall(r"where\s+(\w+)\s*[<>=!]",               fix_sql)
+        columns += re.findall(r"set\s+(\w+)\s*=",
+                              fix_sql)
+        columns += re.findall(r"and\s+(\w+)\s+is\s+(?:not\s+)?null",   fix_sql)
+        columns += re.findall(r"and\s+(\w+)\s*[<>=!]",
+                              fix_sql)
+
+        _sql_keywords = {
+            "null", "not", "and", "or", "where", "set",
+            "from", "table", "select", "true", "false",
+            "is", "in", "like", "between", "exists",
+        }
+        columns = list(dict.fromkeys(
+            c for c in columns if c not in _sql_keywords
+        ))
+
+        _cat_to_assertion = {
+            "null_violation":        "not_null",
+            "range_violation":       "range",
+            "uniqueness_violation":  "unique",
+            "format_violation":      "format",
+            "referential_integrity": "referential",
+            "schema_drift":          "schema",
+        }
+        primary_category = categories[0].lower(
+        ) if categories else "null_violation"
+        assertion_type = _cat_to_assertion.get(primary_category, "not_null")
+
+        for col in columns:
+            failed_tests.append({
+                "column_name":      col,
+                "assertion_type":   assertion_type,
+                "table_name":       table_name,
+                "failure_category": primary_category,
+            })
+
+        return failed_tests
+
 
 # ── Helpers to extract fields from serialized DiagnosisResult ────────────────
 
@@ -391,63 +452,6 @@ def _extract_categories(diagnosis_json: str) -> list[str]:
     except Exception:
         return []
 
-
-def _extract_failed_tests(self, decision) -> list:
-    """
-    Derives FailedTest objects dynamically from diagnosis_json.
-    No hardcoded column map — works for any schema including Northwind.
-    """
-    import re
-    import json
-
-    failed_tests = []
-
-    try:
-        diag = json.loads(decision.diagnosis_json or "{}")
-    except Exception:
-        return failed_tests
-
-    fix_sql    = (diag.get("fix_sql") or "").lower()
-    categories = diag.get("failure_categories") or []
-    table_name = decision.table_name
-
-    # Extract columns from fix_sql
-    columns: list[str] = []
-    columns += re.findall(r"where\s+(\w+)\s+is\s+(?:not\s+)?null", fix_sql)
-    columns += re.findall(r"where\s+(\w+)\s*[<>=!]",               fix_sql)
-    columns += re.findall(r"set\s+(\w+)\s*=",                       fix_sql)
-    columns += re.findall(r"and\s+(\w+)\s+is\s+(?:not\s+)?null",   fix_sql)
-    columns += re.findall(r"and\s+(\w+)\s*[<>=!]",                  fix_sql)
-
-    _sql_keywords = {
-        "null", "not", "and", "or", "where", "set",
-        "from", "table", "select", "true", "false",
-        "is", "in", "like", "between", "exists",
-    }
-    columns = list(dict.fromkeys(
-        c for c in columns if c not in _sql_keywords
-    ))
-
-    _cat_to_assertion = {
-        "null_violation":        "not_null",
-        "range_violation":       "range",
-        "uniqueness_violation":  "unique",
-        "format_violation":      "format",
-        "referential_integrity": "referential",
-        "schema_drift":          "schema",
-    }
-    primary_category = categories[0].lower() if categories else "null_violation"
-    assertion_type   = _cat_to_assertion.get(primary_category, "not_null")
-
-    for col in columns:
-        failed_tests.append({
-            "column_name":      col,
-            "assertion_type":   assertion_type,
-            "table_name":       table_name,
-            "failure_category": primary_category,
-        })
-
-    return failed_tests
 
 # Module-level singleton
 apply_agent = ApplyAgent()
