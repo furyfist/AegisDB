@@ -6,6 +6,7 @@ from src.core.config import settings
 from src.core.models import (
     DiagnosisResult,
     EnrichedFailureEvent,
+    FailedTest,
     RepairDecision,
     SandboxResult,
 )
@@ -117,7 +118,8 @@ class RepairAgent:
                     f"[RepairAgent] Event {event_id} not in store — "
                     f"using diagnosis fallback"
                 )
-                event = _fallback_event_from_diagnosis(diagnosis, fields)
+                table_fqn = fields.get("table_fqn", diagnosis.table_fqn if hasattr(diagnosis, "table_fqn") else "")
+                event = _fallback_event_from_diagnosis(diagnosis, table_fqn)
 
             decision = await self._run_with_retries(event, diagnosis)
             await self._route_decision(decision)
@@ -261,7 +263,6 @@ def _guess_column(category: str, table_fqn: str) -> str:
     return mapping.get(category, "id")
 
 def _fallback_event_from_diagnosis(
-    self,
     diagnosis: DiagnosisResult,
     table_fqn: str,
 ) -> EnrichedFailureEvent:
