@@ -392,12 +392,13 @@ def _extract_categories(diagnosis_json: str) -> list[str]:
         return []
 
 
-def _extract_failed_tests(self, decision: RepairDecision) -> list:
+def _extract_failed_tests(self, decision) -> list:
     """
     Derives FailedTest objects dynamically from diagnosis_json.
-    No hardcoded column map — works for any schema.
+    No hardcoded column map — works for any schema including Northwind.
     """
-    import re, json
+    import re
+    import json
 
     failed_tests = []
 
@@ -406,13 +407,12 @@ def _extract_failed_tests(self, decision: RepairDecision) -> list:
     except Exception:
         return failed_tests
 
-    fix_sql   = (diag.get("fix_sql") or "").lower()
+    fix_sql    = (diag.get("fix_sql") or "").lower()
     categories = diag.get("failure_categories") or []
     table_name = decision.table_name
 
-    # --- extract columns from fix_sql (same logic as repair.py fallback) ---
+    # Extract columns from fix_sql
     columns: list[str] = []
-
     columns += re.findall(r"where\s+(\w+)\s+is\s+(?:not\s+)?null", fix_sql)
     columns += re.findall(r"where\s+(\w+)\s*[<>=!]",               fix_sql)
     columns += re.findall(r"set\s+(\w+)\s*=",                       fix_sql)
@@ -428,29 +428,25 @@ def _extract_failed_tests(self, decision: RepairDecision) -> list:
         c for c in columns if c not in _sql_keywords
     ))
 
-    # --- build assertion map dynamically ---
-    # Map failure category → assertion type used in validator.py
     _cat_to_assertion = {
-        "null_violation":       "not_null",
-        "range_violation":      "range",
-        "uniqueness_violation": "unique",
-        "format_violation":     "format",
-        "referential_integrity":"referential",
-        "schema_drift":         "schema",
+        "null_violation":        "not_null",
+        "range_violation":       "range",
+        "uniqueness_violation":  "unique",
+        "format_violation":      "format",
+        "referential_integrity": "referential",
+        "schema_drift":          "schema",
     }
-
     primary_category = categories[0].lower() if categories else "null_violation"
     assertion_type   = _cat_to_assertion.get(primary_category, "not_null")
 
     for col in columns:
         failed_tests.append({
-            "column_name":     col,
-            "assertion_type":  assertion_type,
-            "table_name":      table_name,
+            "column_name":      col,
+            "assertion_type":   assertion_type,
+            "table_name":       table_name,
             "failure_category": primary_category,
         })
 
-    # If nothing extracted, return empty — validator will skip assertions
     return failed_tests
 
 # Module-level singleton

@@ -237,31 +237,22 @@ def _fallback_event_from_diagnosis(
 ) -> EnrichedFailureEvent:
     """
     Fallback when _aegisdb_events lookup misses.
-    Derives column names dynamically from fix_sql instead of
-    a hardcoded schema-specific map.
+    Derives column names dynamically from fix_sql — works for any schema.
     """
     import re
 
     table_name = table_fqn.split(".")[-1]
 
-    # --- derive affected columns from fix_sql ---
     columns: list[str] = []
     fix_sql_lower = (diagnosis.fix_sql or "").lower()
 
-    # Pattern 1: WHERE col IS NULL  / WHERE col IS NOT NULL
+    # Parse column names from WHERE / SET clauses
     columns += re.findall(r"where\s+(\w+)\s+is\s+(?:not\s+)?null", fix_sql_lower)
+    columns += re.findall(r"where\s+(\w+)\s*[<>=!]",               fix_sql_lower)
+    columns += re.findall(r"set\s+(\w+)\s*=",                       fix_sql_lower)
+    columns += re.findall(r"and\s+(\w+)\s+is\s+(?:not\s+)?null",   fix_sql_lower)
+    columns += re.findall(r"and\s+(\w+)\s*[<>=!]",                  fix_sql_lower)
 
-    # Pattern 2: WHERE col < / > / = / != value
-    columns += re.findall(r"where\s+(\w+)\s*[<>=!]", fix_sql_lower)
-
-    # Pattern 3: SET col = value  (UPDATE statements)
-    columns += re.findall(r"set\s+(\w+)\s*=", fix_sql_lower)
-
-    # Pattern 4: AND col IS / AND col 
-    columns += re.findall(r"and\s+(\w+)\s+is\s+(?:not\s+)?null", fix_sql_lower)
-    columns += re.findall(r"and\s+(\w+)\s*[<>=!]", fix_sql_lower)
-
-    # Deduplicate, strip SQL keywords that may match
     _sql_keywords = {
         "null", "not", "and", "or", "where", "set",
         "from", "table", "select", "true", "false",
@@ -271,21 +262,20 @@ def _fallback_event_from_diagnosis(
         c for c in columns if c not in _sql_keywords
     ))
 
-    # Fall back to category hint if regex found nothing
+    # If regex found nothing, fall back to category hint
     if not columns:
         _category_hints = {
-            "null_violation":          ["id"],
-            "range_violation":         ["amount"],
-            "uniqueness_violation":    ["email"],
-            "referential_integrity":   ["id"],
-            "format_violation":        ["email"],
-            "schema_drift":            [],
+            "null_violation":        ["id"],
+            "range_violation":       ["amount"],
+            "uniqueness_violation":  ["email"],
+            "referential_integrity": ["id"],
+            "format_violation":      ["email"],
+            "schema_drift":          [],
         }
         for cat in (diagnosis.failure_categories or []):
             columns += _category_hints.get(cat.lower(), [])
         columns = list(dict.fromkeys(columns))
 
-    # Build minimal FailedTest objects from derived columns
     failed_tests = []
     for col in columns:
         failed_tests.append(
@@ -293,9 +283,11 @@ def _fallback_event_from_diagnosis(
                 test_name=f"{table_name}_{col}_check",
                 column_name=col,
                 failure_message=f"Detected issue in column {col}",
-                test_type=diagnosis.failure_categories[0]
-                if diagnosis.failure_categories
-                else "unknown",
+                test_type=(
+                    diagnosis.failure_categories[0]
+                    if diagnosis.failure_categories
+                    else "unknown"
+                ),
             )
         )
 
@@ -306,7 +298,7 @@ def _fallback_event_from_diagnosis(
         failed_tests=failed_tests,
         schema_context={},
         enrichment_ok=False,
-        severity=diagnosis.severity if hasattr(diagnosis, "severity") else "medium",
+        severity=getattr(diagnosis, "severity", "medium"),
         raw_event={},
     )
 
