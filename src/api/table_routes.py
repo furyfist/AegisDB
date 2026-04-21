@@ -14,7 +14,7 @@ async def get_live_table_data(
     limit: int = 100,
 ):
     from src.db.connection_registry import get_connection
-    from src.db.profiling_store import get_report as get_profiling_report
+    from src.db.profiling_store import get_report
     from src.core.config import settings
 
     if limit > 500:
@@ -24,14 +24,20 @@ async def get_live_table_data(
     if not conn_record:
         raise HTTPException(status_code=404, detail="Connection not found")
 
-    # Replace conn_record.get("db_name") → conn_record.db_name
-    # Replace conn_record.get("profiling_report_id") → conn_record.profiling_report_id
-    # Replace conn_record.get("last_profiled_at") → conn_record.last_profiled_at
+    # Handle both dict and model object (defensive)
+    if isinstance(conn_record, dict):
+        db_name = conn_record.get("db_name")
+        profiling_report_id = conn_record.get("profiling_report_id")
+        last_profiled = conn_record.get("last_profiled_at")
+    else:
+        db_name = conn_record.db_name
+        profiling_report_id = conn_record.profiling_report_id
+        last_profiled = conn_record.last_profiled_at
 
     connection_url = (
         f"postgresql://{settings.target_db_user}:{settings.target_db_password}"
         f"@{settings.target_db_host}:{settings.target_db_port}"
-        f"/{conn_record.db_name}"
+        f"/{db_name}"
     )
 
     try:
@@ -79,7 +85,9 @@ async def get_live_table_data(
             if isinstance(v, decimal.Decimal):
                 return float(v)
             if isinstance(v, bytes):
-                return None  # skip binary
+                return None
+            if isinstance(v, memoryview):
+                return None
             return v
 
         rows = [
@@ -92,10 +100,9 @@ async def get_live_table_data(
 
     # Anomaly columns from latest profiling report
     anomaly_columns: list[str] = []
-    if conn_record.profiling_report_id:
+    if profiling_report_id:
         try:
-            from src.db.profiling_store import get_report
-            report = await get_report(conn_record.profiling_report_id)
+            report = await get_report(profiling_report_id)
             if report:
                 for t in (report.tables or []):
                     if t.table_name == table_name:
@@ -107,6 +114,14 @@ async def get_live_table_data(
         except Exception:
             pass
 
+    # Handle last_profiled datetime
+    last_profiled_str = None
+    if last_profiled:
+        if hasattr(last_profiled, "isoformat"):
+            last_profiled_str = last_profiled.isoformat()
+        else:
+            last_profiled_str = str(last_profiled)
+
     return {
         "table_name":      table_name,
         "schema":          schema,
@@ -115,5 +130,5 @@ async def get_live_table_data(
         "total_rows":      total_rows,
         "returned_rows":   len(rows),
         "anomaly_columns": anomaly_columns,
-        "last_profiled_at": conn_record.last_profiled_at.isoformat() if conn_record.last_profiled_at else None,
+        "last_profiled_at": last_profiled_str,
     }

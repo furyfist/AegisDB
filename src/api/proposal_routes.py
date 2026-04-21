@@ -70,6 +70,11 @@ async def get_proposal_detail(proposal_id: str):
             detail=f"Proposal {proposal_id} not found",
         )
     
+    # Convert to dict for manipulation (get_proposal returns dict from DB)
+    if not isinstance(proposal, dict):
+        # If it's a model, convert to dict first
+        proposal = proposal.model_dump() if hasattr(proposal, "model_dump") else dict(proposal)
+    
     # Enhance with display fields derived from existing data
     import re as _re
 
@@ -117,6 +122,7 @@ async def get_proposal_detail(proposal_id: str):
     proposal["fix_sql_display"]     = (proposal.get("fix_sql") or "").replace(
         "{table}", f'"{proposal.get("table_name", "table")}"'
     )
+    
     return proposal
 
 
