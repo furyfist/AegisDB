@@ -3,7 +3,7 @@ import logging
 import uuid
 
 import asyncpg
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request
 
 from src.core.models import (
     ConnectRequest,
@@ -262,23 +262,16 @@ async def re_profile_connection(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    """
-    Re-profiles an existing connection.
-    Accepts credentials in body since they are not persisted (Gap 7.2).
-    """
     body = await request.json()
 
-    # Validate required fields
     required = ["host", "port", "database", "username", "password"]
     missing = [f for f in required if f not in body]
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Missing required fields: {missing}. "
-                   f"Credentials are not stored and must be re-supplied.",
+            detail=f"Missing required fields: {missing}. Credentials must be re-supplied.",
         )
 
-    # Check connection exists
     conn_record = await connection_registry.get_connection(connection_id)
     if not conn_record:
         raise HTTPException(status_code=404, detail="Connection not found")
@@ -290,22 +283,19 @@ async def re_profile_connection(
     password = body["password"]
     schemas  = body.get("schemas", ["public"])
 
-    # Test credentials synchronously before starting background work
     connection_url = f"postgresql://{username}:{password}@{host}:{port}/{database}"
-    try:
-        import asyncpg
-        test_conn = await asyncpg.connect(connection_url, timeout=10)
-        await test_conn.close()
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Connection failed: {str(e)}"
-        )
 
-    # Mark as profiling
+    # Validate credentials synchronously before returning
+    try:
+        import asyncpg as _asyncpg
+        _c = await _asyncpg.connect(connection_url, timeout=10)
+        await _c.close()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+
+    # Mark as profiling immediately
     await connection_registry.update_connection(
-        connection_id,
-        {"status": "profiling"},
+        connection_id, {"status": "profiling"}
     )
 
     async def _run_reprofiling():
@@ -313,31 +303,29 @@ async def re_profile_connection(
             from src.agents.profiler import ProfilerAgent
             from src.db.profiling_store import save_profiling_report
 
-            profiler  = ProfilerAgent()
-            report    = await profiler.profile_database(
+            profiler = ProfilerAgent()
+            report   = await profiler.profile_database(
                 connection_url=connection_url,
                 schemas=schemas,
                 table_limit=50,
             )
-
             report_id = await save_profiling_report(report)
 
             await connection_registry.update_connection(
                 connection_id,
                 {
-                    "status":               "ready",
-                    "profiling_report_id":  report_id,
-                    "total_anomalies":      report.total_anomalies,
-                    "critical_count":       report.critical_count,
-                    "tables_found":         len(report.tables),
-                    "last_profiled_at":     "now()",
-                    "error":                None,
+                    "status":              "ready",
+                    "profiling_report_id": report_id,
+                    "total_anomalies":     report.total_anomalies,
+                    "critical_count":      report.critical_count,
+                    "tables_found":        len(report.tables),
+                    "last_profiled_at":    "now()",
+                    "error":               None,
                 },
             )
         except Exception as e:
             await connection_registry.update_connection(
-                connection_id,
-                {"status": "failed", "error": str(e)},
+                connection_id, {"status": "failed", "error": str(e)}
             )
 
     background_tasks.add_task(_run_reprofiling)
