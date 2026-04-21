@@ -336,3 +336,81 @@ async def re_profile_connection(
         "status":        "profiling",
         "message":       "Re-profiling started. Poll GET /api/v1/connections/{id} for status.",
     }
+
+@router.post("/connections/{connection_id}/re-profile")
+async def re_profile_connection(
+    connection_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    body = await request.json()
+
+    required = ["host", "port", "database", "username", "password"]
+    missing = [f for f in required if f not in body]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required fields: {missing}. Credentials must be re-supplied.",
+        )
+
+    # Fetch existing record
+    conn_record = await get_connection(connection_id)
+    if not conn_record:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    host     = body["host"]
+    port     = int(body["port"])
+    database = body["database"]
+    username = body["username"]
+    password = body["password"]
+    schemas  = body.get("schemas", conn_record.schema_names or ["public"])
+
+    connection_url = f"postgresql://{username}:{password}@{host}:{port}/{database}"
+
+    # Validate credentials before starting background work
+    try:
+        test_conn = await asyncpg.connect(connection_url, timeout=10)
+        await test_conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {str(e)}")
+
+    # Mark status as profiling immediately using save_connection
+    conn_record.status = ConnectionStatus.PROFILING
+    conn_record.error  = None
+    await save_connection(conn_record)
+
+    async def _run_reprofiling():
+        try:
+            report = await profiler_agent.profile_database(
+                connection_url=f"postgresql+asyncpg://{username}:{password}@{host}:{port}/{database}",
+                schemas=schemas,
+                table_limit=50,
+            )
+            await save_report(report)
+
+            conn_record.status              = ConnectionStatus.READY
+            conn_record.profiling_report_id = report.report_id
+            conn_record.total_anomalies     = report.total_anomalies
+            conn_record.critical_count      = report.critical_count
+            conn_record.tables_found        = len(report.tables)
+            conn_record.last_profiled_at    = datetime.utcnow()
+            conn_record.error               = None
+            await save_connection(conn_record)
+
+            logger.info(
+                f"[ReProfile] Done connection={connection_id} "
+                f"anomalies={report.total_anomalies}"
+            )
+        except Exception as e:
+            logger.error(f"[ReProfile] Failed: {e}", exc_info=True)
+            conn_record.status = ConnectionStatus.FAILED
+            conn_record.error  = str(e)
+            await save_connection(conn_record)
+
+    background_tasks.add_task(_run_reprofiling)
+
+    return {
+        "connection_id": connection_id,
+        "status":        "profiling",
+        "message":       "Re-profiling started. Poll GET /api/v1/connections/{id} for status.",
+    }
