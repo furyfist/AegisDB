@@ -122,6 +122,7 @@ async def toggle_dry_run():
         "message": f"Apply agent now in {mode} mode",
     }
 
+
 @router.get("/tables/live")
 async def get_live_table_data(
     connection_id: str,
@@ -157,7 +158,8 @@ async def get_live_table_data(
     try:
         conn = await asyncpg.connect(connection_url, timeout=10)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"DB connection failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"DB connection failed: {str(e)}")
 
     try:
         # 1. Column metadata from information_schema
@@ -195,7 +197,9 @@ async def get_live_table_data(
         rows = [dict(r) for r in rows_raw]
 
         # Serialize non-JSON-safe types (dates, decimals, etc.)
-        import datetime, decimal
+        import datetime
+        import decimal
+
         def _serialize(v):
             if isinstance(v, (datetime.date, datetime.datetime)):
                 return v.isoformat()
@@ -238,6 +242,7 @@ async def get_live_table_data(
         "last_profiled_at": conn_record.get("last_profiled_at"),
     }
 
+
 @router.get("/connections/{connection_id}/health")
 async def get_connection_health(connection_id: str):
     """
@@ -245,71 +250,14 @@ async def get_connection_health(connection_id: str):
     Score computed from profiling report anomaly counts.
     """
     from src.db.connection_registry import get_connection
-    from src.db.profiling_store import get_report as get_profiling_report
-    import asyncpg
-    from src.core.config import settings
+    from src.db.profiling_store import get_report
 
     conn_record = await get_connection(connection_id)
     if not conn_record:
         raise HTTPException(status_code=404, detail="Connection not found")
 
-    # Compute health score
-    critical = conn_record.get("critical_count") or 0
-    warnings = (conn_record.get("total_anomalies") or 0) - critical
-    warnings = max(0, warnings)
-
-    if (conn_record.get("total_anomalies") or 0) == 0:
-        health_score = 100
-        status_label = "clean"
-    elif critical == 0:
-        health_score = max(50, 100 - (warnings * 3))
-        status_label = "partial"
-    else:
-        health_score = max(0, 100 - (critical * 10) - (warnings * 3))
-        status_label = "dirty"
-
-    # Per-table breakdown from profiling report
-    tables_summary = []
-    if conn_record.get("profiling_report_id"):
-        try:
-            report = await get_profiling_report(conn_record["profiling_report_id"])
-            if report:
-                for t in (report.get("tables") or []):
-                    anomaly_count = len(t.get("anomalies") or [])
-                    tables_summary.append({
-                        "table_name":    t.get("table_name"),
-                        "schema":        t.get("schema_name", "public"),
-                        "anomaly_count": anomaly_count,
-                        "status":        "dirty" if anomaly_count > 0 else "clean",
-                    })
-        except Exception:
-            pass
-
-    return {
-        "connection_id":     connection_id,
-        "health_score":      health_score,
-        "status":            status_label,
-        "total_anomalies":   conn_record.get("total_anomalies") or 0,
-        "critical_count":    critical,
-        "warning_count":     warnings,
-        "tables_found":      conn_record.get("tables_found") or 0,
-        "tables":            tables_summary,
-        "last_profiled_at":  conn_record.get("last_profiled_at"),
-        "db_name":           conn_record.get("db_name"),
-        "connection_hint":   conn_record.get("connection_hint"),
-    }
-
-@router.get("/connections/{connection_id}/health")
-async def get_connection_health(connection_id: str):
-    from src.db.connection_registry import get_connection
-    from src.db.profiling_store import get_report as get_profiling_report
-
-    conn_record = await get_connection(connection_id)
-    if not conn_record:
-        raise HTTPException(status_code=404, detail="Connection not found")
-
-    critical = conn_record.get("critical_count") or 0
-    total    = conn_record.get("total_anomalies") or 0
+    critical = conn_record.critical_count or 0
+    total = conn_record.total_anomalies or 0
     warnings = max(0, total - critical)
 
     if total == 0:
@@ -323,20 +271,20 @@ async def get_connection_health(connection_id: str):
         status_label = "dirty"
 
     tables_summary = []
-    if conn_record.get("profiling_report_id"):
+    if conn_record.profiling_report_id:
         try:
-            report = await get_profiling_report(conn_record["profiling_report_id"])
+            report = await get_report(conn_record.profiling_report_id)
             if report:
-                for t in (report.get("tables") or []):
-                    anomaly_count = len(t.get("anomalies") or [])
+                for t in (report.tables or []):
+                    anomaly_count = len(t.anomalies or [])
                     tables_summary.append({
-                        "table_name":    t.get("table_name"),
-                        "schema":        t.get("schema_name", "public"),
+                        "table_name":    t.table_name,
+                        "schema":        t.schema_name,
                         "anomaly_count": anomaly_count,
                         "status":        "dirty" if anomaly_count > 0 else "clean",
                     })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[Health] Could not load profiling report: {e}")
 
     return {
         "connection_id":    connection_id,
@@ -345,9 +293,9 @@ async def get_connection_health(connection_id: str):
         "total_anomalies":  total,
         "critical_count":   critical,
         "warning_count":    warnings,
-        "tables_found":     conn_record.get("tables_found") or 0,
+        "tables_found":     conn_record.tables_found or 0,
         "tables":           tables_summary,
-        "last_profiled_at": conn_record.get("last_profiled_at"),
-        "db_name":          conn_record.get("db_name"),
-        "connection_hint":  conn_record.get("connection_hint"),
+        "last_profiled_at": conn_record.last_profiled_at.isoformat() if conn_record.last_profiled_at else None,
+        "db_name":          conn_record.db_name,
+        "connection_hint":  conn_record.connection_hint,
     }
