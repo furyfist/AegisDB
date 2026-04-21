@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.api import table_routes
 from src.api.webhook import router as webhook_router
 from src.api.dashboard import router as dashboard_router
 from src.services.om_client import om_client
@@ -221,6 +222,7 @@ app.include_router(dashboard_router, prefix="/api/v1", tags=["Dashboard"])
 app.include_router(profiler_router, prefix="/api/v1", tags=["Profiler"])
 app.include_router(onboarding_router, prefix="/api/v1", tags=["Onboarding"])
 app.include_router(proposal_router, prefix="/api/v1", tags=["Proposals"])
+app.include_router(table_routes.router, prefix="/api/v1", tags=["tables"])
 
 @app.get("/api/v1/status", tags=["Health"])
 async def status():
