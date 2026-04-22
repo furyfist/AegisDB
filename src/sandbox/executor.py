@@ -271,7 +271,7 @@ def _execute_sandbox_sync(
 
         # 2. Snapshot before
         rows_before = _get_row_count_sync(conn_url, table_name)
-        sample_before = _get_sample_sync(conn_url, table_name, limit=5)
+        all_rows_before = _get_all_rows_sync(conn_url, table_name)
 
         # 3. Apply fix
         try:
@@ -283,14 +283,26 @@ def _execute_sandbox_sync(
                 "rows_before": rows_before,
                 "rows_after": rows_before,
                 "rowcount": 0,
-                "sample_before": sample_before,
+                "sample_before": _get_sample_sync(conn_url, table_name, limit=settings.sandbox_diff_rows),
                 "sample_after": [],
                 "conn_url": conn_url,
             }
 
         # 4. Snapshot after
         rows_after = _get_row_count_sync(conn_url, table_name)
-        sample_after = _get_sample_sync(conn_url, table_name, limit=5)
+        all_rows_after = _get_all_rows_sync(conn_url, table_name)
+
+        sample_before, sample_after = _compute_diff(
+            all_rows_before,
+            all_rows_after,
+            display_limit=settings.sandbox_diff_rows,
+        )
+
+        # Fallback: if fix changed zero detectable rows, show deterministic sample
+        if not sample_before and not sample_after:
+            logger.warning("[Sandbox] Diff produced zero changed rows — falling back to deterministic sample")
+            sample_before = _get_sample_sync(conn_url, table_name, limit=settings.sandbox_diff_rows)
+            sample_after  = sample_before  # identical — fix had no observable row effect
 
         # Return data needed for async assertion step
         return {
@@ -471,7 +483,7 @@ def _run_sandbox_with_assertions_sync(
         _seed_sandbox_sync(conn_url, ddl, col_names, rows, table_name)
 
         rows_before = _get_row_count_sync(conn_url, table_name)
-        sample_before = _get_sample_sync(conn_url, table_name, limit=5)
+        all_rows_before = _get_all_rows_sync(conn_url, table_name)
 
         # Apply fix
         fix_success = True
@@ -485,7 +497,19 @@ def _run_sandbox_with_assertions_sync(
             logger.error(f"[Sandbox] Fix SQL failed: {e}")
 
         rows_after = _get_row_count_sync(conn_url, table_name)
-        sample_after = _get_sample_sync(conn_url, table_name, limit=5)
+        all_rows_after = _get_all_rows_sync(conn_url, table_name)
+
+        sample_before, sample_after = _compute_diff(
+            all_rows_before,
+            all_rows_after,
+            display_limit=settings.sandbox_diff_rows,
+        )
+
+        # Fallback: if fix changed zero detectable rows, show deterministic sample
+        if not sample_before and not sample_after:
+            logger.warning("[Sandbox] Diff produced zero changed rows — falling back to deterministic sample")
+            sample_before = _get_sample_sync(conn_url, table_name, limit=settings.sandbox_diff_rows)
+            sample_after  = sample_before  # identical — fix had no observable row effect
 
         # Run assertions in a new event loop inside the thread
         assertion_dicts = []
