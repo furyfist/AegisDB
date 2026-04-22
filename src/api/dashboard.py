@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException, Query
 import redis.asyncio as aioredis
 
 from src.core.config import settings
-from src.db.audit_log import fetch_recent_audit
+from src.db.audit_log import fetch_recent_audit, fetch_audit_entry
+import json
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -11,25 +12,83 @@ router = APIRouter()
 
 @router.get("/audit")
 async def get_audit_log(limit: int = Query(default=20, le=100)):
-    """
-    Returns the most recent audit log rows from the target DB.
-    Shows the full decision trail: dry_run → applied → rolled_back.
-    """
-    rows = await fetch_recent_audit(limit=limit)
+    entries = await fetch_recent_audit(limit)
+    
+    serialized = []
+    for e in entries:
+        # post_apply_json is stored as a JSON string — parse it for the response
+        post_apply = e.get("post_apply_json")
+        if isinstance(post_apply, str):
+            try:
+                post_apply = json.loads(post_apply)
+            except Exception:
+                post_apply = []
+        elif post_apply is None:
+            post_apply = []
 
-    # Serialize datetime for JSON
-    for row in rows:
-        if "applied_at" in row and hasattr(row["applied_at"], "isoformat"):
-            row["applied_at"] = row["applied_at"].isoformat()
-        if "failure_categories" in row and row["failure_categories"] is None:
-            row["failure_categories"] = []
+        serialized.append({
+            "id":                  e.get("id"),
+            "event_id":            e.get("event_id"),
+            "table_fqn":           e.get("table_fqn"),
+            "table_name":          e.get("table_name"),
+            "action":              e.get("action"),
+            "rows_affected":       e.get("rows_affected"),
+            "dry_run":             e.get("dry_run"),
+            "sandbox_passed":      e.get("sandbox_passed"),
+            "confidence":          e.get("confidence"),
+            "failure_categories":  e.get("failure_categories") or [],
+            "applied_at":          e.get("applied_at"),
+            "error":               e.get("error"),
+            # New detail fields
+            "fix_sql":             e.get("fix_sql"),
+            "rollback_sql":        e.get("rollback_sql"),
+            "post_apply_assertions": post_apply,
+        })
+
+    return {"count": len(serialized), "entries": serialized}
+
+
+@router.get("/audit/{event_id}")
+async def get_audit_entry(event_id: str):
+    """
+    Full detail for a single audit entry by event_id.
+    Used by the frontend expandable row / detail view.
+    """
+    entry = await fetch_audit_entry(event_id)
+    if not entry:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Audit entry for event_id={event_id} not found",
+        )
+
+    post_apply = entry.get("post_apply_json")
+    if isinstance(post_apply, str):
+        try:
+            post_apply = json.loads(post_apply)
+        except Exception:
+            post_apply = []
+    elif post_apply is None:
+        post_apply = []
 
     return {
-        "count": len(rows),
-        "entries": rows,
+        "id":                    entry.get("id"),
+        "event_id":              entry.get("event_id"),
+        "table_fqn":             entry.get("table_fqn"),
+        "table_name":            entry.get("table_name"),
+        "action":                entry.get("action"),
+        "rows_affected":         entry.get("rows_affected"),
+        "dry_run":               entry.get("dry_run"),
+        "sandbox_passed":        entry.get("sandbox_passed"),
+        "confidence":            entry.get("confidence"),
+        "failure_categories":    entry.get("failure_categories") or [],
+        "applied_at":            entry.get("applied_at"),
+        "error":                 entry.get("error"),
+        "fix_sql":               entry.get("fix_sql"),
+        "rollback_sql":          entry.get("rollback_sql"),
+        "post_apply_assertions": post_apply,
     }
 
-
+    
 @router.get("/streams")
 async def get_stream_stats():
     """
