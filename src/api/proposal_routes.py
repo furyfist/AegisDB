@@ -376,8 +376,8 @@ async def re_sandbox_proposal(proposal_id: str):
             "rows_before":    rows_before,
             "rows_after":     rows_after,
             "rows_affected":  rows_affected,
-            "sample_before":  sample_before[:3],
-            "sample_after":   sample_after[:3],
+            "sample_before":  sample_before[:settings.sandbox_diff_rows],
+            "sample_after":   sample_after[:settings.sandbox_diff_rows],
             "message":        "Sandbox refreshed with current data",
         }
 
