@@ -128,11 +128,33 @@ def _get_row_count_sync(conn_url: str, table_name: str) -> int:
         conn.close()
 
 
-def _get_sample_sync(conn_url: str, table_name: str, limit: int = 10) -> list[dict]:
+def _get_all_rows_sync(conn_url: str, table_name: str) -> list[dict]:
+    """
+    Fetch ALL rows from the sandbox table ordered deterministically by ctid.
+    Used for diffing before/after fix — not for display sampling.
+    ctid is the physical row address; stable within a single connection session.
+    """
     conn = psycopg2.connect(_to_psycopg2_url(conn_url))
     cur = conn.cursor()
     try:
-        cur.execute(f'SELECT * FROM "{table_name}" LIMIT {limit}')
+        cur.execute(f'SELECT * FROM "{table_name}" ORDER BY ctid')
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        return _sanitize_rows(rows)
+    finally:
+        cur.close()
+        conn.close()
+
+
+def _get_sample_sync(conn_url: str, table_name: str, limit: int = 10) -> list[dict]:
+    """
+    Deterministic sample for fallback display (ORDER BY ctid).
+    Only used when diff produces zero changed rows.
+    """
+    conn = psycopg2.connect(_to_psycopg2_url(conn_url))
+    cur = conn.cursor()
+    try:
+        cur.execute(f'SELECT * FROM "{table_name}" ORDER BY ctid LIMIT {limit}')
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, row)) for row in cur.fetchall()]
         return _sanitize_rows(rows)

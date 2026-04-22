@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     sandbox_max_retries: int = 3
     sandbox_sample_rows: int = 500
     sandbox_timeout_seconds: int = 60
+    sandbox_diff_rows: int = 20
 
     # Apply
     dry_run: bool = True
