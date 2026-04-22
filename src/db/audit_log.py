@@ -173,7 +173,8 @@ async def fetch_recent_audit(limit: int = 50) -> list[dict]:
                         id, event_id, table_fqn, table_name,
                         action, rows_affected, dry_run,
                         sandbox_passed, confidence,
-                        failure_categories, applied_at, error
+                        failure_categories, applied_at, error,
+                        fix_sql, rollback_sql, post_apply_json
                     FROM _aegisdb_audit
                     ORDER BY applied_at DESC
                     LIMIT :limit
@@ -187,6 +188,37 @@ async def fetch_recent_audit(limit: int = 50) -> list[dict]:
         logger.error(f"[AuditLog] Fetch failed: {e}")
         return []
 
+async def fetch_audit_entry(event_id: str) -> dict | None:
+    """
+    Fetch a single audit entry by event_id — for the detail endpoint.
+    Returns None if not found.
+    """
+    if not _audit_engine:
+        return None
+    try:
+        async with _audit_engine.connect() as conn:
+            result = await conn.execute(
+                text("""
+                    SELECT
+                        id, event_id, table_fqn, table_name,
+                        action, rows_affected, dry_run,
+                        sandbox_passed, confidence,
+                        failure_categories, applied_at, error,
+                        fix_sql, rollback_sql, post_apply_json
+                    FROM _aegisdb_audit
+                    WHERE event_id = :event_id
+                    ORDER BY applied_at DESC
+                    LIMIT 1
+                """),
+                {"event_id": event_id},
+            )
+            row = result.fetchone()
+            if not row:
+                return None
+            return dict(zip(result.keys(), row))
+    except Exception as e:
+        logger.error(f"[AuditLog] fetch_audit_entry failed: {e}")
+        return None
 
 async def close_audit():
     if _audit_engine:
