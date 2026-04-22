@@ -162,7 +162,58 @@ def _get_sample_sync(conn_url: str, table_name: str, limit: int = 10) -> list[di
         cur.close()
         conn.close()
 
+def _compute_diff(
+    all_before: list[dict],
+    all_after: list[dict],
+    display_limit: int,
+) -> tuple[list[dict], list[dict]]:
+    """
+    Compute aligned before/after pairs for rows that actually changed.
 
+    Strategy:
+    - Hash every row as a frozenset of items (order-independent, handles any schema).
+    - Rows present in before but missing in after = modified/deleted (before-state).
+    - Rows present in after but missing in before = modified/deleted (after-state).
+    - Pair them positionally — index 0 before corresponds to index 0 after.
+    - If counts differ (pure deletes or pure inserts), pad the shorter side with
+      empty dicts so the frontend can render a "Deleted" / "Inserted" pill.
+    - If zero rows changed (fix was a no-op or rowcount mismatch), fall back to
+      returning empty lists — caller handles fallback to deterministic sample.
+
+    Returns (sample_before, sample_after) both capped at display_limit.
+    """
+    import json
+
+    def row_hash(row: dict) -> str:
+        # json.dumps with sort_keys gives a stable string for any row shape
+        return json.dumps(row, sort_keys=True, default=str)
+
+    before_hashes = [row_hash(r) for r in all_before]
+    after_hashes  = [row_hash(r) for r in all_after]
+
+    before_set = set(before_hashes)
+    after_set  = set(after_hashes)
+
+    # Rows that disappeared (before-state of changed rows)
+    removed_hashes = before_set - after_set
+    # Rows that appeared  (after-state of changed rows)
+    added_hashes   = after_set  - before_set
+
+    # Preserve original order
+    removed_rows = [r for r, h in zip(all_before, before_hashes) if h in removed_hashes]
+    added_rows   = [r for r, h in zip(all_after,  after_hashes)  if h in added_hashes]
+
+    if not removed_rows and not added_rows:
+        # Zero diff — fix ran but changed nothing detectable
+        return [], []
+
+    # Pad to equal length so frontend rows align 1:1
+    max_len = max(len(removed_rows), len(added_rows))
+    removed_rows += [{}] * (max_len - len(removed_rows))
+    added_rows   += [{}] * (max_len - len(added_rows))
+
+    return removed_rows[:display_limit], added_rows[:display_limit]
+    
 async def _run_async_assertions(
     conn_url: str,
     table_name: str,
