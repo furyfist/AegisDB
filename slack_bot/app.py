@@ -806,6 +806,12 @@ async def main():
 
     await stream_listener.connect()
 
+    # Connect rejection store (sync ChromaDB)
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    await loop.run_in_executor(None, rejection_store.connect)
+    logger.info("[Boot] Rejection store connected")
+
     handler = AsyncSocketModeHandler(app, slack_settings.slack_app_token)
 
     # Run listener and Socket Mode concurrently
