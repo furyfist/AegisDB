@@ -165,9 +165,11 @@ class SlackStreamListener:
 
         # Store mapping immediately so button handlers can find this message
         proposal_message_map[proposal_id] = {
-            "ts":      ts,
-            "channel": channel_id,
+            "ts":         ts,
+            "channel":    channel_id,
             "table_name": table_name,
+            "table_fqn":  table_fqn,
+            "event_id":   proposal.get("event_id", "") if proposal else "",
         }
         logger.info(f"[SlackListener] Posted detecting card ts={ts} for proposal={proposal_id}")
 
