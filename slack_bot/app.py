@@ -12,7 +12,7 @@ Handles:
   - /aegis proposals → GET /proposals?status=pending_approval
   - /aegis audit    → GET /audit?limit=5
 
-Phase 2+ (Q&A, /aegis ask, /aegis why) will be added here.
+Phase 2+ (Q&A, /aegis ask, /aegis why) Added.
 """
 
 import asyncio
@@ -26,6 +26,8 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bot.blocks import proposal_card, resolved_card, rejection_modal
 from slack_bot.config import slack_settings
 from slack_bot.stream_listener import stream_listener, proposal_message_map
+from slack_bot.qa_engine import answer_question, answer_global_question
+from slack_bot.rejection_store import rejection_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,12 +35,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Bolt app ──────────────────────────────────────────────────────────────────
+# ── Bolt app 
 app = AsyncApp(token=slack_settings.slack_bot_token)
 BASE_URL = f"{slack_settings.aegisdb_base_url}/api/v1"
 
+# Groq key — read from same .env the backend uses
+import os
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers 
 
 async def _api_get(path: str) -> dict | None:
     """GET from AegisDB API. Returns parsed JSON or None on error."""
@@ -294,9 +299,24 @@ async def handle_rejection_submit(ack, body, client, view):
             ),
         )
 
-    # Phase 3 hook — store rejection in ChromaDB (wired up in Phase 3)
-    # _store_rejection_in_chromadb(proposal, reason, alternative, user)
-
+    if proposal:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: rejection_store.store_rejection(
+                proposal_id=proposal_id,
+                table_fqn=proposal.get("table_fqn", ""),
+                table_name=proposal.get("table_name", "unknown"),
+                failure_categories=proposal.get("failure_categories", []),
+                fix_sql=proposal.get("fix_sql", ""),
+                fix_description=proposal.get("fix_description", ""),
+                rejection_reason=reason,
+                alternative=alternative,
+                decided_by=user,
+            ),
+        )
+        
+    logger.info(f"[Bot] Rejection stored in ChromaDB for proposal={proposal_id}")
     # Confirm to the user
     await client.chat_postEphemeral(
         channel=msg_info["channel"] if msg_info else slack_settings.slack_ops_channel,
