@@ -84,7 +84,18 @@ async def lifespan(app: FastAPI):
         logger.info("[Boot] Event bus ready")
     except Exception as e:
         logger.warning(f"[Boot] Event bus unavailable: {e}")
-
+        
+    # Slack notifier to boot sequence
+        try:
+            from slack_bot.slack_notifier import connect as slack_connect
+            await slack_connect(
+                host=settings.redis_host,
+                port=settings.redis_port,
+            )
+            logger.info("[Boot] Slack notifier ready")
+        except Exception as e:
+            logger.warning(f"[Boot] Slack notifier unavailable (non-fatal): {e}")
+        
     #  4. Diagnosis stream consumer 
     try:
         await stream_consumer.connect()
