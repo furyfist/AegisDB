@@ -182,7 +182,25 @@ class SlackStreamListener:
         # ── Step 3: Count similar fixes from proposal's diagnosis_json ────
         similar_fix_count = self._extract_similar_fix_count(proposal)
 
-        # ── Step 4: Update card to full proposal ──────────────────────────
+        # ── Step 4: Update card to full proposal (V1: pass sample diff data) ─────
+        # Parse sample arrays — API returns them as lists of dicts
+        raw_before = proposal.get("sample_before") or []
+        raw_after  = proposal.get("sample_after")  or []
+
+        # Defensive: ensure they are lists, not strings (API serialization edge case)
+        if isinstance(raw_before, str):
+            import json as _json
+            try:
+                raw_before = _json.loads(raw_before)
+            except Exception:
+                raw_before = []
+        if isinstance(raw_after, str):
+            import json as _json
+            try:
+                raw_after = _json.loads(raw_after)
+            except Exception:
+                raw_after = []
+
         await self._slack.chat_update(
             channel=channel_id,
             ts=ts,
@@ -201,8 +219,11 @@ class SlackStreamListener:
                 rows_before=proposal.get("rows_before", 0),
                 rows_after=proposal.get("rows_after", 0),
                 similar_fix_count=similar_fix_count,
+                sample_before=raw_before,   # V1 — diff table
+                sample_after=raw_after,     # V1 — diff table
             ),
         )
+
         logger.info(f"[SlackListener] Updated to proposal card for proposal={proposal_id}")
 
         # ── Step 5: DM the table owner if mapped ──────────────────────────
