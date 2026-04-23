@@ -1,0 +1,14 @@
+{
+  "eventType": "entityUpdated",
+  "entityType": "testCase",
+  "entityFQN": "aegisdb_service.aegisdb.public.orders.customer_id.orders_customer_id_not_null",
+  "entity": {
+    "name": "orders_customer_id_not_null",
+    "fullyQualifiedName": "aegisdb_service.aegisdb.public.orders.customer_id.orders_customer_id_not_null",
+    "testCaseResult": {
+      "testCaseStatus": "Failed",
+      "result": "Found 4 null values in column customer_id"
+    }
+  },
+  "timestamp": 1712345678000
+}
