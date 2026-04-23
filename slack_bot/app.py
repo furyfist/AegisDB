@@ -18,6 +18,7 @@ Phase 2+ (Q&A, /aegis ask, /aegis why) Added.
 import asyncio
 import logging
 import re
+from functools import partial
 
 import httpx
 from slack_bolt.async_app import AsyncApp
@@ -688,9 +689,6 @@ async def _cmd_ask(say, question: str):
 # ── /aegis why [table] (Phase 3 — rejection memory query) ────────────────────
 
 async def _cmd_why(say, table_name: str):
-    import os
-    from functools import partial
-
     if not table_name:
         await say("Usage: `/aegis why [table_name]`\nExample: `/aegis why orders`")
         return
