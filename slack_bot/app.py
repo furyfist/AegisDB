@@ -222,6 +222,18 @@ async def handle_reject_button(ack, body, client, action):
         view=rejection_modal(proposal_id=proposal_id, table_name=table_name),
     )
 
+# ── Quick action buttons from /aegis status ───────────────────────────────────
+
+@app.action("quick_proposals")
+async def handle_quick_proposals(ack, say):
+    await ack()
+    await _cmd_proposals(say)
+
+
+@app.action("quick_audit")
+async def handle_quick_audit(ack, say):
+    await ack()
+    await _cmd_audit(say, limit=5)
 
 # ── Phase 1+3: Modal — Rejection submitted ────────────────────────────────────
 
