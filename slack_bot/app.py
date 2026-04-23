@@ -317,6 +317,7 @@ async def handle_rejection_submit(ack, body, client, view):
         )
 
     logger.info(f"[Bot] Rejection stored in ChromaDB for proposal={proposal_id}")
+    
     # Confirm to the user
     await client.chat_postEphemeral(
         channel=msg_info["channel"] if msg_info else slack_settings.slack_ops_channel,
@@ -355,6 +356,10 @@ async def handle_aegis_command(ack, command, say, client):
         await _cmd_audit(say, limit=min(limit, 10))
     elif sub == "help":
         await _cmd_help(say)
+    elif sub == "ask":
+        await _cmd_ask(say, args)
+    elif sub == "why":
+        await _cmd_why(say, args.strip().lower())
     else:
         await say(
             f"Unknown subcommand `{sub}`. Try `/aegis help` for available commands."
@@ -783,7 +788,7 @@ async def _cmd_why(say, table_name: str):
         ],
         text=f"Rejection history for {table_name}: {synthesis}",
     )
-    
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main():
