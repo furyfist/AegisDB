@@ -411,8 +411,11 @@ async def handle_aegis_command(ack, command, say, client):
 # ── /aegis status ─────────────────────────────────────────────────────────────
 
 async def _cmd_status(say):
-    status_data  = await _api_get("/status")
-    streams_data = await _api_get("/streams")
+    # Fetch both endpoints concurrently
+    status_data, streams_data = await asyncio.gather(
+        _api_get("/status"),
+        _api_get("/streams"),
+    )
 
     if not status_data:
         await say("❌ Could not reach AegisDB backend.")
@@ -424,45 +427,112 @@ async def _cmd_status(say):
     threshold = status_data.get("confidence_threshold", 0.70)
     healthy   = sum(1 for v in pipeline.values() if v == "ok")
     total     = len(pipeline)
-    mode      = "🟡  DRY RUN" if dry_run else "🟢  LIVE"
+    mode      = "🟡  DRY RUN (SAFE)" if dry_run else "🟢  LIVE MODE"
 
-    stage_lines = "\n".join(
-        f"{'✅' if v == 'ok' else '❌'}  {k.replace('_', ' ').title()}"
-        for k, v in pipeline.items()
-    )
+    # ── Block 1: System header ────────────────────────────────────────────
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": "⚡  AegisDB Pipeline Status",
+                "emoji": True,
+            },
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Mode*\n{mode}"},
+                {"type": "mrkdwn", "text": f"*Health*\n{healthy}/{total} stages"},
+                {"type": "mrkdwn", "text": f"*Version*\n`{version}`"},
+                {"type": "mrkdwn", "text": f"*Confidence θ*\n{int(threshold * 100)}%"},
+            ],
+        },
+        {"type": "divider"},
+    ]
 
-    stream_lines = ""
+    # ── Block 2: Pipeline stages as 2-column fields grid ─────────────────
+    stage_fields: list[dict] = []
+    for stage_key, stage_val in pipeline.items():
+        emoji    = "✅" if stage_val == "ok" else "❌"
+        label    = stage_key.replace("_", " ").title()
+        stage_fields.append({
+            "type": "mrkdwn",
+            "text": f"{emoji}  *{label}*",
+        })
+
+    # Slack fields renders in 2 columns automatically
+    blocks.append({
+        "type": "section",
+        "fields": stage_fields,
+    })
+
+    blocks.append({"type": "divider"})
+
+    # ── Block 3: Stream depths as fields grid with warning signals ────────
     if streams_data and "streams" in streams_data:
-        stream_lines = "\n\n*Stream Depths*\n" + "\n".join(
-            f"• `{k}`:  {v.get('length', 0)}"
-            for k, v in streams_data["streams"].items()
-        )
+        stream_fields: list[dict] = []
+        for stream_key, stream_val in streams_data["streams"].items():
+            length     = stream_val.get("length", 0)
+            # Warning signal if backlog is building
+            warn       = "⚠️ " if length > 10 else ""
+            short_name = stream_key.replace("aegisdb:", "")
+            stream_fields.append({
+                "type": "mrkdwn",
+                "text": f"{warn}*{short_name}*\n{length} messages",
+            })
 
-    await say(
-        blocks=[
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "⚡  AegisDB Pipeline Status", "emoji": True},
-            },
-            {
-                "type": "section",
-                "fields": [
-                    {"type": "mrkdwn", "text": f"*Mode*\n{mode}"},
-                    {"type": "mrkdwn", "text": f"*Health*\n{healthy}/{total} stages"},
-                    {"type": "mrkdwn", "text": f"*Version*\n`{version}`"},
-                    {"type": "mrkdwn", "text": f"*Confidence θ*\n{int(threshold * 100)}%"},
-                ],
-            },
-            {"type": "divider"},
-            {
+        if stream_fields:
+            blocks.append({
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*Stages*\n{stage_lines}{stream_lines}",
+                    "text": "*Stream Depths*",
                 },
+            })
+            blocks.append({
+                "type": "section",
+                "fields": stream_fields,
+            })
+            blocks.append({"type": "divider"})
+
+    # ── Block 4: Quick action buttons ─────────────────────────────────────
+    blocks.append({
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": "📋  View Proposals",
+                    "emoji": True,
+                },
+                "action_id": "quick_proposals",
+            },
+            {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": "📜  Audit Log",
+                    "emoji": True,
+                },
+                "action_id": "quick_audit",
             },
         ],
-        text=f"AegisDB: {healthy}/{total} healthy · {mode}",
+    })
+
+    # Footer
+    blocks.append({
+        "type": "context",
+        "elements": [{
+            "type": "mrkdwn",
+            "text": f"AegisDB · {_utc_now()}",
+        }],
+    })
+
+    await say(
+        blocks=blocks,
+        text=f"AegisDB: {healthy}/{total} stages healthy · {mode}",
     )
 
 
