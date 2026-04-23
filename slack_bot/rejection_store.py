@@ -1,4 +1,3 @@
-# slack_bot/rejection_store.py
 """
 ChromaDB wrapper for storing engineer rejection reasons.
 Separate collection from aegisdb_fixes — rejections carry different
