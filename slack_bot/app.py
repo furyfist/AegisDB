@@ -737,20 +737,7 @@ async def _cmd_why(say, table_name: str):
     )
 
     groq_key = os.getenv("GROQ_API_KEY", "")
-    try:
-        llm = AsyncGroq(api_key=groq_key)
-        resp = await llm.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            max_tokens=400,
-            temperature=0.2,
-            messages=[
-                {"role": "system", "content": _build_system_prompt()},
-                {"role": "user",   "content": synthesis_prompt},
-            ],
-        )
-        synthesis = resp.choices[0].message.content.strip()
-    except Exception as e:
-        synthesis = f"LLM synthesis failed: {e}"
+    synthesis = await answer_global_question(synthesis_prompt, groq_key)
 
     count = len(rejections)
     await say(
