@@ -1,30 +1,231 @@
+# slack_bot/blocks.py
 """
 Block Kit builders for AegisDB Slack cards.
-Three states:
-  1. detecting_card  — posted immediately when event arrives (pipeline still running)
-  2. proposal_card   — replaces detecting card once proposal is ready
-  3. resolved_card   — replaces proposal card after approve/reject completes
+
+Card states:
+  detecting_card   — posted immediately when event arrives
+  proposal_card    — replaces detecting_card once proposal is ready
+  resolved_card    — replaces proposal_card after approve/reject/complete
+
+Visual improvements (V1-V4):
+  V1 — Before/after data diff table in proposal_card
+  V2 — Dynamic severity header based on confidence + failure_categories
+  V3 — resolved_card as receipt with fields grid
+  V4 — (in app.py _cmd_status) — this file is blocks only
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _confidence_bar(confidence: float) -> str:
-    """Render a 10-block confidence bar using unicode blocks."""
+    """10-block unicode progress bar."""
     filled = round(confidence * 10)
-    bar = "█" * filled + "░" * (10 - filled)
-    pct = int(confidence * 100)
+    bar    = "█" * filled + "░" * (10 - filled)
+    pct    = int(confidence * 100)
     return f"{bar}  {pct}%"
 
 
-def _severity_emoji(severity: str) -> str:
-    return {
-        "critical": "🔴",
-        "high":     "🟠",
-        "medium":   "🟡",
-        "low":      "🟢",
-    }.get(severity.lower(), "⚪")
+def _header_style(
+    failure_categories: list[str],
+    confidence: float,
+    sandbox_passed: bool,
+) -> tuple[str, str]:
+    """
+    V2: Return (emoji, label) based on failure type + confidence + sandbox.
+    Used to make the proposal card header dynamic instead of always 🔴.
 
+    Priority order:
+      1. Sandbox failed → always ⚠️ regardless of confidence
+      2. Critical failure types at high confidence → 🔴
+      3. High confidence → 🟠
+      4. At threshold → 🟡
+    """
+    CRITICAL_TYPES = {"null_violation", "referential_integrity", "uniqueness_violation"}
+    categories_set = set(failure_categories)
+
+    if not sandbox_passed:
+        return "⚠️", "Fix Proposal — Sandbox Failed"
+
+    if confidence >= 0.90 and categories_set & CRITICAL_TYPES:
+        return "🔴", "Critical Fix Proposal"
+
+    if confidence >= 0.85:
+        return "🟠", "High Priority Fix Proposal"
+
+    if confidence >= 0.70:
+        return "🟡", "Fix Proposal"
+
+    # Below threshold — should rarely appear in a card but handle gracefully
+    return "⚪", "Fix Proposal — Low Confidence"
+
+
+def _format_value(val) -> str:
+    """
+    V1: Format a single cell value for the diff table.
+    Handles None (NULL), strings, ints, floats, dicts cleanly.
+    Slack mrkdwn: backticks for code, plain for values.
+    """
+    if val is None:
+        return "`NULL`"
+    if isinstance(val, bool):
+        return str(val)
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, str):
+        # Truncate very long strings
+        if len(val) > 40:
+            return f"`{val[:37]}...`"
+        return f"'{val}'"
+    if isinstance(val, dict):
+        return "`{...}`"
+    return str(val)
+
+
+def _build_diff_section(
+    sample_before: list[dict],
+    sample_after: list[dict],
+    failure_categories: list[str],
+    rows_affected: int,
+) -> list[dict]:
+    """
+    V1: Build a Slack section block showing before→after row diff.
+
+    Strategy:
+      - Show max 3 row pairs to stay within Slack block limits
+      - Detect which columns actually changed between before and after
+      - Prioritize showing changed columns, then ID columns
+      - If no sample data, return a graceful empty state block
+
+    Returns a list of blocks (0-2 blocks) to splice into proposal_card.
+    """
+    # Guard: no data available
+    if not sample_before and not sample_after:
+        return [{
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": "📊 _Sandbox preview data not available for this proposal._",
+            }],
+        }]
+
+    # Determine display limit
+    display_rows = min(3, len(sample_before), len(sample_after)) if (
+        sample_before and sample_after
+    ) else min(3, len(sample_before or sample_after))
+
+    if display_rows == 0:
+        return [{
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": "📊 _No changed rows detected in sandbox preview._",
+            }],
+        }]
+
+    # Detect which columns changed — prioritize these in display
+    # Also include ID columns for row identification
+    all_cols: list[str] = []
+    if sample_before:
+        all_cols = list(sample_before[0].keys())
+    elif sample_after:
+        all_cols = list(sample_after[0].keys())
+
+    # Find ID column (first col ending in _id or named id)
+    id_col = next(
+        (c for c in all_cols if c == "id" or c.endswith("_id")),
+        None,
+    )
+
+    # Find changed columns by comparing first available row pair
+    changed_cols: list[str] = []
+    if sample_before and sample_after:
+        before_row = sample_before[0]
+        after_row  = sample_after[0]
+        for col in all_cols:
+            b_val = before_row.get(col)
+            a_val = after_row.get(col)
+            if b_val != a_val:
+                changed_cols.append(col)
+
+    # Fallback: infer changed column from failure category
+    if not changed_cols:
+        cat_to_col_hint = {
+            "null_violation":           "region",
+            "range_violation":          "amount",
+            "uniqueness_violation":     "email",
+            "format_violation":         "email",
+            "referential_integrity":    "customer_id",
+        }
+        for cat in failure_categories:
+            hint = cat_to_col_hint.get(cat)
+            if hint and hint in all_cols:
+                changed_cols = [hint]
+                break
+
+    # Build diff lines — one per display row
+    diff_lines: list[str] = []
+
+    for i in range(display_rows):
+        before_row = sample_before[i] if i < len(sample_before) else {}
+        after_row  = sample_after[i]  if i < len(sample_after)  else {}
+
+        # Row identifier prefix
+        if id_col:
+            row_id = before_row.get(id_col) or after_row.get(id_col)
+            id_prefix = f"row {row_id}: " if row_id is not None else ""
+        else:
+            id_prefix = f"row {i+1}: "
+
+        # Show changed columns
+        cols_to_show = changed_cols if changed_cols else all_cols[:2]
+        for col in cols_to_show:
+            b_val = _format_value(before_row.get(col))
+            a_val = _format_value(after_row.get(col))
+            if b_val != a_val:
+                diff_lines.append(
+                    f"{id_prefix}*{col}*:  {b_val}  →  {a_val}"
+                )
+            else:
+                diff_lines.append(
+                    f"{id_prefix}*{col}*:  {b_val}  _(unchanged)_"
+                )
+
+    # Remaining rows note
+    remaining = rows_affected - display_rows
+    footer = (
+        f"_...and {remaining} more row(s) not shown_"
+        if remaining > 0 else ""
+    )
+
+    diff_text = "\n".join(diff_lines)
+    if footer:
+        diff_text += f"\n{footer}"
+
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*📊 Sandbox Preview*  _(showing {display_rows} of {rows_affected} rows)_",
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": diff_text,
+            },
+        },
+    ]
+
+
+# ── Card builders ─────────────────────────────────────────────────────────────
 
 def detecting_card(
     event_id: str,
@@ -33,10 +234,13 @@ def detecting_card(
     severity: str,
 ) -> list[dict]:
     """
-    Phase 1 card — posted the moment the event is detected.
-    Pipeline is still running. No proposal yet.
+    Phase 1 card — posted the moment the event is received.
+    Pipeline is still running. Self-updates to proposal_card when ready.
     """
-    emoji = _severity_emoji(severity)
+    SEVERITY_EMOJI = {
+        "critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢",
+    }
+    emoji    = SEVERITY_EMOJI.get(severity.lower(), "⚪")
     short_id = event_id[:8]
 
     return [
@@ -64,19 +268,14 @@ def detecting_card(
                 "type": "mrkdwn",
                 "text": (
                     ":hourglass_flowing_sand:  *Pipeline running* — "
-                    "detecting failure category, running diagnosis & sandbox preview...\n"
-                    "_This card will update automatically when the fix proposal is ready._"
+                    "diagnosing failure and running sandbox preview...\n"
+                    "_This card updates automatically when the proposal is ready._"
                 ),
             },
         },
         {
             "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"AegisDB · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-                }
-            ],
+            "elements": [{"type": "mrkdwn", "text": f"AegisDB · {_utc_now()}"}],
         },
     ]
 
@@ -95,178 +294,360 @@ def proposal_card(
     rows_before: int,
     rows_after: int,
     similar_fix_count: int = 0,
+    # V1 additions — default to empty list so old call sites don't break
+    sample_before: list[dict] | None = None,
+    sample_after: list[dict] | None = None,
 ) -> list[dict]:
     """
-    Full proposal card — replaces detecting_card once proposal is ready.
-    Shows all context needed to make an approve/reject decision.
-    Includes Approve / Reject buttons and an expandable SQL section.
+    Full proposal card.
+    V1: Adds before/after data diff section.
+    V2: Dynamic severity header based on confidence + failure type.
     """
-    sandbox_status = "✅  Passed" if sandbox_passed else "❌  Failed"
+    sample_before = sample_before or []
+    sample_after  = sample_after  or []
+
+    # V2: Dynamic header
+    emoji, label = _header_style(failure_categories, confidence, sandbox_passed)
+
+    # Format category names for display
     categories_str = ", ".join(
         c.replace("_", " ").title() for c in failure_categories
     ) or "Unknown"
 
+    sandbox_status = "✅  Passed" if sandbox_passed else "❌  Failed"
+
     history_note = (
-        f"📚  _{similar_fix_count} similar fix(es) in knowledge base_"
+        f"📚  _{similar_fix_count} similar fix(es) in knowledge base — factored into diagnosis_"
         if similar_fix_count > 0
         else "📚  _No prior fixes for this table — first occurrence_"
     )
 
-    blocks = [
-        {
-            "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": "🔴  Fix Proposal Ready · " + table_name,
-                "emoji": True,
-            },
+    # ── Build blocks ──────────────────────────────────────────────────────
+    blocks: list[dict] = []
+
+    # Header
+    blocks.append({
+        "type": "header",
+        "text": {
+            "type": "plain_text",
+            "text": f"{emoji}  {label} · {table_name}",
+            "emoji": True,
         },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Table*\n`{table_name}`"},
-                {"type": "mrkdwn", "text": f"*Issue Type*\n{categories_str}"},
-                {"type": "mrkdwn", "text": f"*Rows Affected*\n{rows_affected}  ({rows_before} → {rows_after})"},
-                {"type": "mrkdwn", "text": f"*Sandbox*\n{sandbox_status}"},
-            ],
-        },
-        {"type": "divider"},
-        {
-            "type": "section",
-            "text": {
+    })
+
+    # Stats row: table, issue, rows, sandbox
+    blocks.append({
+        "type": "section",
+        "fields": [
+            {"type": "mrkdwn", "text": f"*Table*\n`{table_name}`"},
+            {"type": "mrkdwn", "text": f"*Issue*\n{categories_str}"},
+            {
                 "type": "mrkdwn",
-                "text": f"*Root Cause*\n{root_cause}",
+                "text": f"*Rows Affected*\n{rows_affected}  ({rows_before} → {rows_after})",
             },
+            {"type": "mrkdwn", "text": f"*Sandbox*\n{sandbox_status}"},
+        ],
+    })
+
+    blocks.append({"type": "divider"})
+
+    # Root cause
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"*Root Cause*\n{root_cause}",
         },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"*Proposed Fix*\n{fix_description}",
-            },
+    })
+
+    # Fix description
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"*Proposed Fix*\n{fix_description}",
         },
-        {
-            "type": "section",
-            "text": {
+    })
+
+    # V2: Confidence + sandbox on same row as fields
+    blocks.append({
+        "type": "section",
+        "fields": [
+            {
                 "type": "mrkdwn",
                 "text": f"*Confidence*\n{_confidence_bar(confidence)}",
             },
-        },
-        {
-            "type": "section",
-            "text": {
+            {
                 "type": "mrkdwn",
-                "text": f"```{fix_sql}```",
+                "text": f"*Sandbox Result*\n{sandbox_status}",
             },
+        ],
+    })
+
+    # Fix SQL — collapsed in a code block
+    # Keep SQL but make it secondary to the diff
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"*Fix SQL*\n```{fix_sql}```",
         },
-        {"type": "divider"},
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": history_note}],
-        },
-        {
-            "type": "actions",
-            "block_id": f"proposal_actions_{proposal_id}",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "✅  Approve Fix", "emoji": True},
-                    "style": "primary",
-                    "action_id": "approve_proposal",
-                    "value": proposal_id,
-                    "confirm": {
-                        "title": {"type": "plain_text", "text": "Approve this fix?"},
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"This will apply the fix to *{table_name}* affecting *{rows_affected} rows*.\nSandbox: {sandbox_status}",
-                        },
-                        "confirm": {"type": "plain_text", "text": "Yes, apply it"},
-                        "deny": {"type": "plain_text", "text": "Cancel"},
+    })
+
+    blocks.append({"type": "divider"})
+
+    # V1: Before/after data diff
+    diff_blocks = _build_diff_section(
+        sample_before=sample_before,
+        sample_after=sample_after,
+        failure_categories=failure_categories,
+        rows_affected=rows_affected,
+    )
+    blocks.extend(diff_blocks)
+
+    blocks.append({"type": "divider"})
+
+    # Knowledge base history note
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": history_note}],
+    })
+
+    # Action buttons
+    blocks.append({
+        "type": "actions",
+        "block_id": f"proposal_actions_{proposal_id}",
+        "elements": [
+            {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": "✅  Approve Fix",
+                    "emoji": True,
+                },
+                "style": "primary",
+                "action_id": "approve_proposal",
+                "value": proposal_id,
+                "confirm": {
+                    "title": {"type": "plain_text", "text": "Approve this fix?"},
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"This will apply the fix to *{table_name}* "
+                            f"affecting *{rows_affected} rows*.\n"
+                            f"Sandbox: {sandbox_status}"
+                        ),
                     },
+                    "confirm": {"type": "plain_text", "text": "Yes, apply it"},
+                    "deny":    {"type": "plain_text", "text": "Cancel"},
                 },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "❌  Reject", "emoji": True},
-                    "style": "danger",
-                    "action_id": "reject_proposal",
-                    "value": proposal_id,
+            },
+            {
+                "type": "button",
+                "text": {
+                    "type": "plain_text",
+                    "text": "❌  Reject",
+                    "emoji": True,
                 },
-            ],
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"Proposal ID: `{proposal_id[:8]}...`  ·  AegisDB · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-                }
-            ],
-        },
-    ]
+                "style": "danger",
+                "action_id": "reject_proposal",
+                "value": proposal_id,
+            },
+        ],
+    })
+
+    # Footer
+    blocks.append({
+        "type": "context",
+        "elements": [{
+            "type": "mrkdwn",
+            "text": (
+                f"Proposal ID: `{proposal_id[:8]}...`  ·  "
+                f"AegisDB · {_utc_now()}"
+            ),
+        }],
+    })
+
     return blocks
 
 
 def resolved_card(
     table_name: str,
-    outcome: str,           # "approved" | "rejected" | "completed" | "failed"
+    outcome: str,           # "completed" | "approved" | "rejected" | "failed"
     rows_affected: int,
     decided_by: str,
     reason: str = "",
     dry_run: bool = True,
+    confidence: float = 0.0,
+    sandbox_passed: bool = True,
+    applied_at: str = "",
 ) -> list[dict]:
     """
-    Final card state — replaces proposal card after decision is made.
+    V3: Final card state rendered as a receipt with fields grid.
+    Each outcome (completed, executing, rejected, failed) has a distinct
+    visual treatment — not just different text in the same layout.
     """
-    if outcome == "completed":
-        mode = "DRY RUN" if dry_run else "LIVE"
-        header = f"✅  Fix Applied · {table_name}"
-        body = (
-            f"*{rows_affected} rows* updated successfully.  "
-            f"Post-apply verification passed.\n"
-            f"Mode: `{mode}`  ·  Approved by: {decided_by}"
-        )
-    elif outcome == "approved":
-        header = f"⏳  Executing Fix · {table_name}"
-        body = f"Fix approved by {decided_by}. Apply agent is running..."
-    elif outcome == "rejected":
-        header = f"❌  Proposal Rejected · {table_name}"
-        body = (
-            f"Rejected by {decided_by}.\n"
-            f"*Reason:* {reason or 'No reason provided.'}\n"
-            "_Rejection reason stored in knowledge base for future reference._"
-        )
-    elif outcome == "failed":
-        header = f"💥  Fix Failed · {table_name}"
-        body = "The fix could not be applied. Check the audit log for details."
-    else:
-        header = f"ℹ️  {table_name} · {outcome}"
-        body = reason or ""
+    now      = applied_at or _utc_now()
+    mode_str = "DRY RUN 🟡" if dry_run else "LIVE 🟢"
+    conf_str = f"{int(confidence * 100)}%" if confidence > 0 else "N/A"
+    sbox_str = "✅ Passed" if sandbox_passed else "❌ Failed"
 
+    # ── completed (fix applied) ───────────────────────────────────────────
+    if outcome == "completed":
+        return [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"✅  Fix Applied · {table_name}",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Rows Fixed*\n{rows_affected}"},
+                    {"type": "mrkdwn", "text": f"*Mode*\n{mode_str}"},
+                    {"type": "mrkdwn", "text": f"*Decided by*\n{decided_by}"},
+                    {"type": "mrkdwn", "text": f"*Applied at*\n{now}"},
+                    {"type": "mrkdwn", "text": f"*Confidence*\n{conf_str}"},
+                    {"type": "mrkdwn", "text": f"*Sandbox*\n{sbox_str}"},
+                ],
+            },
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": "Post-apply verification passed · Rollback SQL preserved",
+                }],
+            },
+        ]
+
+    # ── approved / executing ──────────────────────────────────────────────
+    if outcome == "approved":
+        return [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"⏳  Executing Fix · {table_name}",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Rows Queued*\n{rows_affected}"},
+                    {"type": "mrkdwn", "text": f"*Mode*\n{mode_str}"},
+                    {"type": "mrkdwn", "text": f"*Approved by*\n{decided_by}"},
+                    {"type": "mrkdwn", "text": f"*Started at*\n{now}"},
+                ],
+            },
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": "Apply agent running — card will update when complete",
+                }],
+            },
+        ]
+
+    # ── rejected ──────────────────────────────────────────────────────────
+    if outcome == "rejected":
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"❌  Proposal Rejected · {table_name}",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Rejected by*\n{decided_by}"},
+                    {"type": "mrkdwn", "text": f"*At*\n{now}"},
+                ],
+            },
+        ]
+        if reason:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Reason*\n> {reason}",
+                },
+            })
+        blocks.append({
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": (
+                    "✏️  Rejection reason stored in knowledge base · "
+                    "Future proposals for this table will reflect this decision"
+                ),
+            }],
+        })
+        return blocks
+
+    # ── failed ────────────────────────────────────────────────────────────
+    if outcome == "failed":
+        return [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"💥  Fix Failed · {table_name}",
+                    "emoji": True,
+                },
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Attempted by*\n{decided_by}"},
+                    {"type": "mrkdwn", "text": f"*At*\n{now}"},
+                    {"type": "mrkdwn", "text": f"*Mode*\n{mode_str}"},
+                    {"type": "mrkdwn", "text": "*Status*\nRolled back"},
+                ],
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "⚠️  The fix could not be applied — "
+                        "transaction was rolled back automatically.\n"
+                        "Run `/aegis audit` for full error details."
+                    ),
+                },
+            },
+            {
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": "No production data was modified",
+                }],
+            },
+        ]
+
+    # ── fallback (unknown outcome) ────────────────────────────────────────
     return [
         {
-            "type": "header",
-            "text": {"type": "plain_text", "text": header, "emoji": True},
-        },
-        {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": body},
-        },
-        {
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"AegisDB · {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-                }
-            ],
+            "text": {
+                "type": "mrkdwn",
+                "text": f"ℹ️  *{table_name}* · {outcome}\n{reason or ''}",
+            },
         },
     ]
 
 
 def rejection_modal(proposal_id: str, table_name: str) -> dict:
     """
-    Slack modal for capturing rejection reason.
+    Slack modal for capturing rejection reason + alternative suggestion.
     Opened when engineer clicks Reject.
+    callback_id must match app.py @app.view("rejection_modal_submit").
     """
     return {
         "type": "modal",
@@ -280,19 +661,29 @@ def rejection_modal(proposal_id: str, table_name: str) -> dict:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"Rejecting fix proposal for *{table_name}*.\nYour reason will be stored in the knowledge base to improve future proposals.",
+                    "text": (
+                        f"Rejecting fix proposal for *{table_name}*.\n"
+                        "Your reason will be stored in the knowledge base "
+                        "to improve future proposals for this table."
+                    ),
                 },
             },
             {
                 "type": "input",
                 "block_id": "rejection_reason_block",
-                "label": {"type": "plain_text", "text": "Why are you rejecting this?"},
+                "label": {
+                    "type": "plain_text",
+                    "text": "Why are you rejecting this?",
+                },
                 "element": {
                     "type": "plain_text_input",
                     "action_id": "rejection_reason_input",
                     "placeholder": {
                         "type": "plain_text",
-                        "text": "e.g. This column feeds billing reports — NULL→Unknown breaks aggregations",
+                        "text": (
+                            "e.g. This column feeds billing — "
+                            "NULL→Unknown breaks downstream aggregations"
+                        ),
                     },
                     "multiline": True,
                 },
@@ -300,14 +691,20 @@ def rejection_modal(proposal_id: str, table_name: str) -> dict:
             {
                 "type": "input",
                 "block_id": "alternative_block",
-                "label": {"type": "plain_text", "text": "What should happen instead? (optional)"},
+                "label": {
+                    "type": "plain_text",
+                    "text": "What should happen instead? (optional)",
+                },
                 "optional": True,
                 "element": {
                     "type": "plain_text_input",
                     "action_id": "alternative_input",
                     "placeholder": {
                         "type": "plain_text",
-                        "text": "e.g. Fix the ETL pipeline source instead of patching the data",
+                        "text": (
+                            "e.g. Fix the ETL source — "
+                            "don't patch the data downstream"
+                        ),
                     },
                     "multiline": True,
                 },
