@@ -315,7 +315,7 @@ async def handle_rejection_submit(ack, body, client, view):
                 decided_by=user,
             ),
         )
-        
+
     logger.info(f"[Bot] Rejection stored in ChromaDB for proposal={proposal_id}")
     # Confirm to the user
     await client.chat_postEphemeral(
@@ -566,7 +566,224 @@ async def _cmd_help(say):
         text="AegisDB Bot commands",
     )
 
+# ── In-thread message handler (Phase 2 Q&A) ──────────────────────────────────
 
+@app.event("message")
+async def handle_thread_message(event, client, say):
+    """
+    Fires on every message in a channel the bot is in.
+    We only act if:
+      1. The message is in a thread (has thread_ts)
+      2. That thread_ts belongs to a known proposal (proposal_message_map)
+      3. The message is not from the bot itself
+    """
+    import os
+
+    # Ignore bot messages to prevent loops
+    if event.get("bot_id") or event.get("subtype"):
+        return
+
+    thread_ts = event.get("thread_ts")
+    if not thread_ts:
+        return  # top-level message, not a thread reply
+
+    # Find which proposal this thread belongs to
+    proposal_id = None
+    for pid, info in proposal_message_map.items():
+        if info.get("ts") == thread_ts:
+            proposal_id = pid
+            break
+
+    if not proposal_id:
+        return  # thread not related to any AegisDB proposal
+
+    question = event.get("text", "").strip()
+    if not question:
+        return
+
+    channel = event["channel"]
+    thread  = event["thread_ts"]
+    user_id = event.get("user", "")
+
+    # Typing indicator — post ephemeral "thinking" message
+    await client.chat_postEphemeral(
+        channel=channel,
+        user=user_id,
+        text="🤔 AegisDB is thinking...",
+        thread_ts=thread,
+    )
+
+    # Call QA engine
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    answer = await answer_question(
+        question=question,
+        proposal_id=proposal_id,
+        groq_api_key=groq_key,
+    )
+
+    # Post answer in thread
+    await client.chat_postMessage(
+        channel=channel,
+        thread_ts=thread,
+        text=answer,
+        blocks=[
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": answer},
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"AegisDB · answer grounded in proposal `{proposal_id[:8]}...`, "
+                                f"fix history, and rejection memory",
+                    }
+                ],
+            },
+        ],
+    )
+
+
+# ── /aegis ask [question] (Phase 2 global Q&A) ────────────────────────────────
+
+async def _cmd_ask(say, question: str):
+    import os
+    if not question:
+        await say("Usage: `/aegis ask [your question]`\nExample: `/aegis ask which tables have worsening NULL trends?`")
+        return
+
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    answer = await answer_global_question(question, groq_key)
+
+    await say(
+        blocks=[
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "🤖  AegisDB Answer", "emoji": True},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Q: {question}*\n\n{answer}"},
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "Grounded in recent audit log and pending proposals",
+                    }
+                ],
+            },
+        ],
+        text=answer,
+    )
+
+
+# ── /aegis why [table] (Phase 3 — rejection memory query) ────────────────────
+
+async def _cmd_why(say, table_name: str):
+    import os
+    from functools import partial
+
+    if not table_name:
+        await say("Usage: `/aegis why [table_name]`\nExample: `/aegis why orders`")
+        return
+
+    await say(f"🔍 Checking rejection history for `{table_name}`...")
+
+    # Pull rejections from ChromaDB — sync, run in executor
+    loop = asyncio.get_event_loop()
+    rejections = await loop.run_in_executor(
+        None,
+        partial(
+            rejection_store.find_rejections_for_table,
+            table_fqn=table_name,     # partial match on table name
+            failure_category="",
+            top_k=5,
+        ),
+    )
+
+    if not rejections:
+        await say(
+            f"📭  No rejection history found for `{table_name}`.\n"
+            f"Either this table has never had a proposal rejected, "
+            f"or it's the first time AegisDB has seen this table."
+        )
+        return
+
+    # Ask Groq to synthesise the rejection history into a clear explanation
+    rej_text = "\n".join(
+        f"  [{i+1}] {r.get('rejected_at', '')[:10]} | "
+        f"categories: {r.get('failure_categories', '')} | "
+        f"reason: {r.get('rejection_reason', '')} | "
+        f"alternative: {r.get('alternative', 'none')}"
+        for i, r in enumerate(rejections)
+    )
+
+    synthesis_prompt = (
+        f"A data engineer asked: 'Why has `{table_name}` been having recurring issues?'\n\n"
+        f"Here is the rejection history for this table:\n{rej_text}\n\n"
+        f"Synthesise a clear explanation of:\n"
+        f"1. What the underlying data quality problem seems to be\n"
+        f"2. Why previous fixes were rejected\n"
+        f"3. What the right long-term solution might be\n\n"
+        f"Be concise — 4-6 sentences. Plain text, minimal markdown."
+    )
+
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    try:
+        llm = AsyncGroq(api_key=groq_key)
+        resp = await llm.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            max_tokens=400,
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": _build_system_prompt()},
+                {"role": "user",   "content": synthesis_prompt},
+            ],
+        )
+        synthesis = resp.choices[0].message.content.strip()
+    except Exception as e:
+        synthesis = f"LLM synthesis failed: {e}"
+
+    count = len(rejections)
+    await say(
+        blocks=[
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": f"📚  Rejection Memory · {table_name} ({count} rejection(s))",
+                    "emoji": True,
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": synthesis},
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*Raw rejection history:*\n```{rej_text}```",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Source: `aegisdb_rejections` ChromaDB collection · {count} entries matched",
+                    }
+                ],
+            },
+        ],
+        text=f"Rejection history for {table_name}: {synthesis}",
+    )
+    
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main():
