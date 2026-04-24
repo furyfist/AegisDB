@@ -225,14 +225,17 @@ async def handle_approve(ack, body, client, action):
     # Background: poll audit and update to final state
     asyncio.create_task(
         _poll_for_completion(
-            proposal_id=proposal_id,
-            event_id=event_id,
-            channel=msg_chan,
-            ts=msg_ts,
-            table_name=table_name,
-            rows_affected=rows_affected,
-            decided_by=user,
-            dry_run=dry_run,
+            proposal_id   = proposal_id,
+            event_id      = event_id,
+            channel       = msg_chan,
+            ts            = msg_ts,
+            table_name    = table_name,
+            table_fqn     = proposal.get("table_fqn", ""),
+            rows_affected = rows_affected,
+            decided_by    = user,
+            dry_run       = dry_run,
+            confidence    = proposal.get("confidence", 0.0),
+            sandbox_passed= proposal.get("sandbox_passed", True),
         )
     )
     logger.info(f"[Bot] Approve triggered proposal={proposal_id} by {user}")
