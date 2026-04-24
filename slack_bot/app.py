@@ -341,16 +341,10 @@ async def handle_message_deleted(ack):
 # ── Phase 2: In-thread Q&A ────────────────────────────────────────────────────
 
 @app.event("message")
-async def handle_thread_message(event, client, ack, logger):
-    await ack()
-    logger.info(f"[QA] message event: subtype={event.get('subtype')} thread_ts={event.get('thread_ts')}")  
-    """
-    Fires on every message event. Acts only when:
-      1. Message is in a thread (thread_ts present)
-      2. That thread belongs to a known proposal
-      3. Message is from a human (not bot, not subtype event)
-    """
-    # Ignore bot messages and system subtypes (joins, leaves, etc.)
+async def handle_thread_message(event, client):
+    # Raw log — no filtering yet
+    print(f"MESSAGE EVENT RECEIVED: {event}")
+    
     if event.get("bot_id") or event.get("bot_profile") or event.get("subtype"):
         return
 
@@ -358,7 +352,6 @@ async def handle_thread_message(event, client, ack, logger):
     if not thread_ts:
         return
 
-    # Find proposal for this thread
     proposal_id = next(
         (pid for pid, info in proposal_message_map.items()
          if info.get("ts") == thread_ts),
@@ -374,7 +367,6 @@ async def handle_thread_message(event, client, ack, logger):
     channel = event["channel"]
     user_id = event.get("user", "")
 
-    # Ephemeral thinking indicator
     await client.chat_postEphemeral(
         channel=channel,
         user=user_id,
@@ -397,16 +389,12 @@ async def handle_thread_message(event, client, ack, logger):
                 "type": "context",
                 "elements": [{
                     "type": "mrkdwn",
-                    "text": (
-                        f"AegisDB · grounded in proposal `{proposal_id[:8]}...`, "
-                        f"fix history, and rejection memory"
-                    ),
+                    "text": f"AegisDB · grounded in proposal `{proposal_id[:8]}...`, fix history, and rejection memory",
                 }],
             },
         ],
     )
-
-
+    
 # ── Phase 1+2: Slash command dispatcher ──────────────────────────────────────
 
 @app.command("/aegis")
