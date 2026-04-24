@@ -204,7 +204,7 @@ class OpenMetadataClient:
                 resp = await self._client.post(
                     "/api/v1/tags",
                     headers={**headers, "Content-Type": "application/json"},
-                    content='{"name":"healed","description":"This table was automatically healed by AegisDB.","classification":{"name":"AegisDB"}}',
+                    content='{"name":"healed","description":"This table was automatically healed by AegisDB.","classification":"AegisDB"}'
                 )
                 if resp.status_code not in (200, 201):
                     logger.warning(
