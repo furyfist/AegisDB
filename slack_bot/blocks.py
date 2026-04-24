@@ -168,36 +168,43 @@ def _build_diff_section(
                 changed_cols = [hint]
                 break
 
-    # Build diff lines — one per display row
+    # NEW — match rows by primary key, show ONLY changed columns
+    # Build lookup: pk_value → row for after sample
+    pk_col = id_col  # already detected above
+
+    if pk_col and sample_before and sample_after:
+        after_lookup = {row.get(pk_col): row for row in sample_after}
+    else:
+        after_lookup = {}
+
+    shown = 0
     diff_lines: list[str] = []
 
-    for i in range(display_rows):
-        before_row = sample_before[i] if i < len(sample_before) else {}
-        after_row  = sample_after[i]  if i < len(sample_after)  else {}
+    for before_row in sample_before:
+        if shown >= display_rows:
+            break
 
-        # Row identifier prefix
-        if id_col:
-            row_id = before_row.get(id_col) or after_row.get(id_col)
-            id_prefix = f"row {row_id}: " if row_id is not None else ""
-        else:
-            id_prefix = f"row {i+1}: "
+        pk_val    = before_row.get(pk_col) if pk_col else None
+        after_row = after_lookup.get(pk_val, {}) if pk_val is not None else {}
 
-        # Show changed columns
-        cols_to_show = changed_cols if changed_cols else all_cols[:2]
-        for col in cols_to_show:
+        id_prefix = f"row {pk_val}: " if pk_val is not None else f"row {shown+1}: "
+
+        # Only show columns that actually changed
+        cols_to_check = changed_cols if changed_cols else all_cols
+        row_has_change = False
+
+        for col in cols_to_check:
             b_val = _format_value(before_row.get(col))
-            a_val = _format_value(after_row.get(col))
+            a_val = _format_value(after_row.get(col)) if after_row else b_val
             if b_val != a_val:
-                diff_lines.append(
-                    f"{id_prefix}*{col}*:  {b_val}  →  {a_val}"
-                )
-            else:
-                diff_lines.append(
-                    f"{id_prefix}*{col}*:  {b_val}  _(unchanged)_"
-                )
+                diff_lines.append(f"{id_prefix}*{col}*:  {b_val}  →  {a_val}")
+                row_has_change = True
+
+        if row_has_change:
+            shown += 1
 
     # Remaining rows note
-    remaining = rows_affected - display_rows
+    remaining = rows_affected - shown
     footer = (
         f"_...and {remaining} more row(s) not shown_"
         if remaining > 0 else ""
@@ -212,7 +219,7 @@ def _build_diff_section(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*📊 Sandbox Preview*  _(showing {display_rows} of {rows_affected} rows)_",
+                "text": f"*📊 Sandbox Preview*  _(showing {shown} of {rows_affected} rows)_",
             },
         },
         {
