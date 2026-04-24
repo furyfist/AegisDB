@@ -19,7 +19,7 @@ import httpx
 from groq import AsyncGroq
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-
+from slack_bot.blocks import proposal_card, resolved_card, rejection_modal, _utc_now
 from slack_bot.blocks import proposal_card, resolved_card, rejection_modal
 from slack_bot.config import slack_settings
 from slack_bot.qa_engine import (

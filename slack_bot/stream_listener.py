@@ -251,42 +251,6 @@ class SlackStreamListener:
             except Exception as e:
                 logger.warning(f"[SlackListener] DM to owner failed (non-fatal): {e}")
 
-        # ── Step 6: Fire-and-forget poll for completion + update card ─────
-        # Runs in background — never blocks the listener loop
-        asyncio.create_task(
-            self._poll_for_completion_with_links(
-                proposal_id   = proposal_id,
-                ts            = ts,
-                channel_id    = channel_id,
-                table_name    = proposal.get("table_name", table_name),
-                table_fqn     = proposal.get("table_fqn", table_fqn),
-                decided_by    = proposal.get("decision_by", "human"),
-                rows_affected = proposal.get("rows_affected", rows_affected),
-                dry_run       = proposal.get("dry_run", True),
-                confidence    = proposal.get("confidence", confidence),
-                sandbox_passed= proposal.get("sandbox_passed", False),
-            )
-        )
-        logger.info(
-            f"[SlackListener] Completion poller started for proposal={proposal_id}"
-        )
-
-        # ── Step 5: DM the table owner if mapped ──────────────────────────
-        owner_uid = slack_settings.table_owner_map.get(table_name.lower())
-        if owner_uid and owner_uid != "U00000000":
-            try:
-                await self._slack.chat_postMessage(
-                    channel=owner_uid,
-                    text=(
-                        f"👋 Hey — AegisDB generated a fix proposal for "
-                        f"`{table_name}` that needs your review.\n"
-                        f"Check <#{channel_id}> to approve or reject."
-                    ),
-                )
-                logger.info(f"[SlackListener] DM sent to owner {owner_uid}")
-            except Exception as e:
-                logger.warning(f"[SlackListener] DM to owner failed (non-fatal): {e}")
-
     def _build_doc_links(
         self,
         event_id: str,
