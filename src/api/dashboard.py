@@ -4,6 +4,11 @@ import redis.asyncio as aioredis
 
 from src.core.config import settings
 from src.db.audit_log import fetch_recent_audit, fetch_audit_entry
+from src.db.reports_store import (
+    fetch_reports,
+    fetch_report_by_id,
+    fetch_report_stats,
+)
 import json
 
 logger = logging.getLogger(__name__)
@@ -237,3 +242,84 @@ async def get_connection_health(connection_id: str):
         "db_name":          conn_record.db_name,
         "connection_hint":  conn_record.connection_hint,
     }
+
+@router.get("/reports")
+async def get_reports(
+    limit: int = Query(default=50, le=200),
+    table_name: str | None = Query(default=None),
+):
+    """
+    List all fix reports, newest first.
+    Optionally filter by ?table_name=orders
+    Used by the frontend Incidents page.
+    """
+    reports = await fetch_reports(limit=limit, table_name=table_name)
+
+    serialized = []
+    for r in reports:
+        serialized.append({
+            "report_id":         r.get("report_id"),
+            "event_id":          r.get("event_id"),
+            "table_fqn":         r.get("table_fqn"),
+            "table_name":        r.get("table_name"),
+            "column_name":       r.get("column_name"),
+            "anomaly_type":      r.get("anomaly_type"),
+            "anomaly_severity":  r.get("anomaly_severity"),
+            "fix_type":          r.get("fix_type"),
+            "fix_sql":           r.get("fix_sql"),
+            "rows_affected":     r.get("rows_affected"),
+            "confidence":        r.get("confidence"),
+            "sandbox_passed":    r.get("sandbox_passed"),
+            "post_apply_passed": r.get("post_apply_passed"),
+            "assertions_passed": r.get("assertions_passed"),
+            "assertions_total":  r.get("assertions_total"),
+            "recurrence_count":  r.get("recurrence_count"),
+            "downstream_tables": r.get("downstream_tables") or [],
+            "approver":          r.get("approver"),
+            "created_at":        r.get("created_at"),
+        })
+
+    return {"count": len(serialized), "reports": serialized}
+
+
+@router.get("/reports/stats")
+async def get_report_stats():
+    """
+    Aggregate stats for the Incidents page header cards.
+    Returns: total_incidents, total_rows_healed, avg_confidence,
+             tables_touched, recurrence_rate.
+    """
+    return await fetch_report_stats()
+
+
+@router.get("/reports/{report_id}")
+async def get_report(report_id: str):
+    """Single fix report detail by UUID. Used by the deep-link incident page."""
+    report = await fetch_report_by_id(report_id)
+    if not report:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Report {report_id} not found",
+        )
+    return {
+        "report_id":         report.get("report_id"),
+        "event_id":          report.get("event_id"),
+        "table_fqn":         report.get("table_fqn"),
+        "table_name":        report.get("table_name"),
+        "column_name":       report.get("column_name"),
+        "anomaly_type":      report.get("anomaly_type"),
+        "anomaly_severity":  report.get("anomaly_severity"),
+        "fix_type":          report.get("fix_type"),
+        "fix_sql":           report.get("fix_sql"),
+        "rows_affected":     report.get("rows_affected"),
+        "confidence":        report.get("confidence"),
+        "sandbox_passed":    report.get("sandbox_passed"),
+        "post_apply_passed": report.get("post_apply_passed"),
+        "assertions_passed": report.get("assertions_passed"),
+        "assertions_total":  report.get("assertions_total"),
+        "recurrence_count":  report.get("recurrence_count"),
+        "downstream_tables": report.get("downstream_tables") or [],
+        "approver":          report.get("approver"),
+        "created_at":        report.get("created_at"),
+    }
+    
