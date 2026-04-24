@@ -93,133 +93,84 @@ def _build_diff_section(
     failure_categories: list[str],
     rows_affected: int,
 ) -> list[dict]:
-    """
-    V1: Build a Slack section block showing before→after row diff.
-
-    Strategy:
-      - Show max 3 row pairs to stay within Slack block limits
-      - Detect which columns actually changed between before and after
-      - Prioritize showing changed columns, then ID columns
-      - If no sample data, return a graceful empty state block
-
-    Returns a list of blocks (0-2 blocks) to splice into proposal_card.
-    """
-    # Guard: no data available
-    if not sample_before and not sample_after:
+    if not sample_before:
         return [{
             "type": "context",
             "elements": [{
                 "type": "mrkdwn",
-                "text": "📊 _Sandbox preview data not available for this proposal._",
+                "text": "📊 _Sandbox preview not available._",
             }],
         }]
 
-    # Determine display limit
-    display_rows = min(3, len(sample_before), len(sample_after)) if (
-        sample_before and sample_after
-    ) else min(3, len(sample_before or sample_after))
-
-    if display_rows == 0:
-        return [{
-            "type": "context",
-            "elements": [{
-                "type": "mrkdwn",
-                "text": "📊 _No changed rows detected in sandbox preview._",
-            }],
-        }]
-
-    # Detect which columns changed — prioritize these in display
-    # Also include ID columns for row identification
-    all_cols: list[str] = []
-    if sample_before:
-        all_cols = list(sample_before[0].keys())
-    elif sample_after:
-        all_cols = list(sample_after[0].keys())
-
-    # Find ID column (first col ending in _id or named id)
+    # Find ID column
+    all_cols = list(sample_before[0].keys()) if sample_before else []
     id_col = next(
         (c for c in all_cols if c == "id" or c.endswith("_id")),
         None,
     )
 
-    # Find changed columns by comparing first available row pair
-    changed_cols: list[str] = []
-    if sample_before and sample_after:
-        before_row = sample_before[0]
-        after_row  = sample_after[0]
-        for col in all_cols:
-            b_val = before_row.get(col)
-            a_val = after_row.get(col)
-            if b_val != a_val:
-                changed_cols.append(col)
-
-    # Fallback: infer changed column from failure category
-    if not changed_cols:
-        cat_to_col_hint = {
-            "null_violation":           "region",
-            "range_violation":          "amount",
-            "uniqueness_violation":     "email",
-            "format_violation":         "email",
-            "referential_integrity":    "customer_id",
-        }
-        for cat in failure_categories:
-            hint = cat_to_col_hint.get(cat)
-            if hint and hint in all_cols:
-                changed_cols = [hint]
+    # Find the column that is NULL in before sample
+    # This is the column the fix targets — only show this column
+    null_cols: list[str] = []
+    for col in all_cols:
+        for row in sample_before[:10]:
+            if row.get(col) is None:
+                null_cols.append(col)
                 break
 
-    # NEW — match rows by primary key, show ONLY changed columns
-    # Build lookup: pk_value → row for after sample
-    pk_col = id_col  # already detected above
+    if not null_cols:
+        # Fallback — infer from failure category
+        cat_hints = {
+            "null_violation": None,  # will scan below
+            "range_violation": "amount",
+            "uniqueness_violation": "email",
+        }
+        null_cols = [cat_hints.get(c) for c in failure_categories if cat_hints.get(c)]
 
-    if pk_col and sample_before and sample_after:
-        after_lookup = {row.get(pk_col): row for row in sample_after}
-    else:
-        after_lookup = {}
+    if not null_cols:
+        null_cols = all_cols[:1]  # last resort
 
-    shown = 0
+    # Build diff lines — only null columns, max 3 rows
+    display_rows = min(3, len(sample_before))
     diff_lines: list[str] = []
 
-    for before_row in sample_before:
-        if shown >= display_rows:
-            break
+    for i in range(display_rows):
+        row = sample_before[i]
+        pk_val = row.get(id_col) if id_col else i + 1
+        id_prefix = f"row {pk_val}: "
 
-        pk_val    = before_row.get(pk_col) if pk_col else None
-        after_row = after_lookup.get(pk_val, {}) if pk_val is not None else {}
+        for col in null_cols:
+            if row.get(col) is None:
+                # Infer after value from fix SQL if possible
+                after_val = "'Unknown'"  # default
+                if sample_after and i < len(sample_after):
+                    matched = sample_after[i].get(col)
+                    if matched is not None:
+                        after_val = _format_value(matched)
+                diff_lines.append(
+                    f"{id_prefix}*{col}*:  `NULL`  →  {after_val}"
+                )
 
-        id_prefix = f"row {pk_val}: " if pk_val is not None else f"row {shown+1}: "
+    if not diff_lines:
+        return [{
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": "📊 _No null values found in sandbox preview sample._",
+            }],
+        }]
 
-        # Only show columns that actually changed
-        cols_to_check = changed_cols if changed_cols else all_cols
-        row_has_change = False
-
-        for col in cols_to_check:
-            b_val = _format_value(before_row.get(col))
-            a_val = _format_value(after_row.get(col)) if after_row else b_val
-            if b_val != a_val:
-                diff_lines.append(f"{id_prefix}*{col}*:  {b_val}  →  {a_val}")
-                row_has_change = True
-
-        if row_has_change:
-            shown += 1
-
-    # Remaining rows note
-    remaining = rows_affected - shown
-    footer = (
-        f"_...and {remaining} more row(s) not shown_"
-        if remaining > 0 else ""
-    )
-
+    remaining = rows_affected - display_rows
     diff_text = "\n".join(diff_lines)
-    if footer:
-        diff_text += f"\n{footer}"
+    if remaining > 0:
+        diff_text += f"\n_...and {remaining} more row(s) not shown_"
 
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"*📊 Sandbox Preview*  _(showing {shown} of {rows_affected} rows)_",
+                "text": f"*📊 Sandbox Preview*  _(showing {display_rows} of {rows_affected} rows)_",
             },
         },
         {
@@ -230,8 +181,7 @@ def _build_diff_section(
             },
         },
     ]
-
-
+    
 # ── Card builders ─────────────────────────────────────────────────────────────
 
 def detecting_card(
