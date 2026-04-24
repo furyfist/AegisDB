@@ -248,6 +248,7 @@ class SlackStreamListener:
         GET /api/v1/proposals/{proposal_id}
         """
         url = f"{slack_settings.aegisdb_base_url}/api/v1/proposals/{proposal_id}"
+        proposal = None
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
