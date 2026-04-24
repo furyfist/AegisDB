@@ -28,6 +28,7 @@ from src.db.connection_registry import (
     init_connection_registry,
     close_connection_registry,
 )
+from src.db.reports_store import init_reports_store, close_reports_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -148,6 +149,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Boot] Proposal store unavailable: {e}")
 
+    # ── 2f. Reports store (auto-documentation) 
+    try:
+        await init_reports_store()
+        logger.info("[Boot] Reports store ready")
+    except Exception as e:
+        logger.warning(f"[Boot] Reports store unavailable (non-fatal): {e}")
+
     logger.info("AegisDB ready ✓")
     logger.info(f"  Webhook  → http://localhost:{settings.app_port}/api/v1/webhook/om-test-failure")
     logger.info(f"  Audit    → http://localhost:{settings.app_port}/api/v1/audit")
@@ -187,7 +195,8 @@ async def lifespan(app: FastAPI):
     await close_connection_registry()
     await close_proposal_store()
     await close_audit()
-
+    await close_reports_store()
+    
     logger.info("AegisDB shutdown complete")
 
 
