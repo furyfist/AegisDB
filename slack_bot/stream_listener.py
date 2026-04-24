@@ -163,21 +163,30 @@ class SlackStreamListener:
         ts      = post_resp["ts"]
         channel_id = post_resp["channel"]
 
-        # Store mapping immediately so button handlers can find this message
-        proposal_message_map[proposal_id] = {
-            "ts":         ts,
-            "channel":    channel_id,
-            "table_name": table_name,
-            "table_fqn":  table_fqn,
-            "event_id":   proposal.get("event_id", "") if proposal else "",
-        }
         logger.info(f"[SlackListener] Posted detecting card ts={ts} for proposal={proposal_id}")
 
         # ── Step 2: Fetch full proposal from API ──────────────────────────
         proposal = await self._fetch_proposal(proposal_id)
         if not proposal:
             logger.error(f"[SlackListener] Could not fetch proposal {proposal_id} — card left in detecting state")
+            # Store minimal map entry so reject/approve still works
+            proposal_message_map[proposal_id] = {
+                "ts":         ts,
+                "channel":    channel_id,
+                "table_name": table_name,
+                "table_fqn":  table_fqn,
+                "event_id":   "",
+            }
             return
+
+        # Store mapping after fetch — now we have the real event_id
+        proposal_message_map[proposal_id] = {
+            "ts":         ts,
+            "channel":    channel_id,
+            "table_name": proposal.get("table_name", table_name),
+            "table_fqn":  proposal.get("table_fqn", table_fqn),
+            "event_id":   proposal.get("event_id", ""),
+        }
 
         # ── Step 3: Count similar fixes from proposal's diagnosis_json ────
         similar_fix_count = self._extract_similar_fix_count(proposal)
