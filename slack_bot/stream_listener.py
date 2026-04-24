@@ -18,7 +18,7 @@ import httpx
 import redis.asyncio as redis
 from slack_sdk.web.async_client import AsyncWebClient
 
-from slack_bot.blocks import detecting_card, proposal_card
+from slack_bot.blocks import detecting_card, proposal_card, resolved_card
 from slack_bot.config import slack_settings
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,7 @@ class SlackStreamListener:
 
         logger.info(f"[SlackListener] Updated to proposal card for proposal={proposal_id}")
 
-        # ── Step 5: DM the table owner if mapped ──────────────────────────
+        # ── Step 5: DM the table owner if mapped ─────────────────────────
         owner_uid = slack_settings.table_owner_map.get(table_name.lower())
         if owner_uid and owner_uid != "U00000000":
             try:
@@ -250,6 +250,201 @@ class SlackStreamListener:
                 logger.info(f"[SlackListener] DM sent to owner {owner_uid}")
             except Exception as e:
                 logger.warning(f"[SlackListener] DM to owner failed (non-fatal): {e}")
+
+    def _build_doc_links(
+        self,
+        event_id: str,
+        report_id: str | None,
+        table_fqn: str,
+    ) -> dict:
+        """
+        Build the three documentation URLs from known IDs.
+        Returns dict with incident_url, audit_url, om_url.
+        All are best-effort — any missing piece just returns None for that key.
+        """
+        base_frontend = slack_settings.aegisdb_base_url.replace(
+            "8001", "3000"
+        )
+        base_om = slack_settings.aegisdb_base_url.replace(
+            "8001", "8585"
+        )
+
+        audit_url = (
+            f"{base_frontend}/audit/{event_id}"
+            if event_id else None
+        )
+        incident_url = (
+            f"{base_frontend}/incidents"
+            if report_id else None
+        )
+        # OM table page — encode dots as %2E in the path
+        om_table_path = table_fqn.replace(".", "%2E")
+        om_url = (
+            f"{base_om}/table/{om_table_path}"
+            if table_fqn else None
+        )
+
+        return {
+            "incident_url": incident_url,
+            "audit_url":    audit_url,
+            "om_url":       om_url,
+        }
+
+    async def _poll_for_completion_with_links(
+        self,
+        proposal_id: str,
+        ts: str,
+        channel_id: str,
+        table_name: str,
+        table_fqn: str,
+        decided_by: str,
+        rows_affected: int,
+        dry_run: bool,
+        confidence: float,
+        sandbox_passed: bool,
+        max_polls: int = 15,
+        poll_interval: float = 4.0,
+    ):
+        """
+        Polls the audit API until the fix is confirmed applied/failed,
+        then updates the Slack card with the resolved_card + doc links.
+
+        Replaces the previous _poll_for_completion pattern.
+        Runs as a fire-and-forget task — never blocks the listener loop.
+        """
+        for attempt in range(max_polls):
+            await asyncio.sleep(poll_interval)
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    # Poll the proposal directly — more reliable than audit lookup
+                    proposal_resp = await client.get(
+                        f"{slack_settings.aegisdb_base_url}/api/v1/proposals/{proposal_id}"
+                    )
+                    if proposal_resp.status_code != 200:
+                        continue
+
+                    proposal = proposal_resp.json()
+                    status = proposal.get("status", "")
+
+                    if status not in ("completed", "failed"):
+                        # Still executing or pending
+                        continue
+
+                    # Get the real event_id from the proposal
+                    event_id = proposal.get("event_id", "")
+
+                    # Check audit for the real action
+                    action = "applied"
+                    if event_id:
+                        audit_resp = await client.get(
+                            f"{slack_settings.aegisdb_base_url}/api/v1/audit/{event_id}"
+                        )
+                        if audit_resp.status_code == 200:
+                            action = audit_resp.json().get("action", "applied")
+
+                    # Check if a report was generated
+                    report_id = None
+                    if action == "applied":
+                        reports_resp = await client.get(
+                            f"{slack_settings.aegisdb_base_url}/api/v1/reports",
+                            params={"limit": 5, "table_name": proposal.get("table_name", "")},
+                        )
+                        if reports_resp.status_code == 200:
+                            reports = reports_resp.json().get("reports", [])
+                            for r in reports:
+                                if r.get("event_id") == event_id:
+                                    report_id = r.get("report_id")
+                                    break
+                            if not report_id and reports:
+                                report_id = reports[0].get("report_id")
+
+                    # Build links
+                    links = self._build_doc_links(event_id, report_id, table_fqn)
+
+                    # Map status → outcome
+                    outcome = "completed" if action == "applied" else "failed"
+
+                    # Update the Slack card
+                    await self._slack.chat_update(
+                        channel=channel_id,
+                        ts=ts,
+                        text=f"{'✅' if outcome == 'completed' else '💥'} Fix {outcome} for `{table_name}`",
+                        blocks=resolved_card(
+                            table_name=table_name,
+                            outcome=outcome,
+                            rows_affected=rows_affected,
+                            decided_by=decided_by,
+                            dry_run=dry_run,
+                            confidence=confidence,
+                            sandbox_passed=sandbox_passed,
+                            applied_at=proposal.get("decided_at", ""),
+                            incident_url=links["incident_url"],
+                            audit_url=links["audit_url"],
+                            om_url=links["om_url"],
+                        ),
+                    )
+                    logger.info(
+                        f"[SlackListener] Resolved card updated for proposal={proposal_id} "
+                        f"outcome={outcome} links={links}"
+                    )
+                    return
+
+            except Exception as e:
+                logger.warning(
+                    f"[SlackListener] Poll attempt {attempt + 1} failed "
+                    f"(non-fatal): {e}"
+                )
+                continue
+
+        logger.warning(
+            f"[SlackListener] Poll timed out for proposal={proposal_id} "
+            f"after {max_polls} attempts — card left in approved state"
+        )
+
+    async def fetch_table_history(self, table_name: str) -> str:
+        """
+        Fetch fix history for a table from the reports API.
+        Returns a formatted Slack mrkdwn string.
+        Used by /aegis history {table_name} command in app.py.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    f"{slack_settings.aegisdb_base_url}/api/v1/reports",
+                    params={"limit": 10, "table_name": table_name},
+                )
+                if resp.status_code != 200:
+                    return f"⚠️ Could not fetch history for `{table_name}` (API returned {resp.status_code})"
+
+                data = resp.json()
+                reports = data.get("reports", [])
+
+                if not reports:
+                    return f"📋 No fix history found for `{table_name}`. It has not been healed by AegisDB yet."
+
+                lines = [
+                    f"📋 *Fix history for `{table_name}`* — {len(reports)} incident(s)\n"
+                ]
+                for i, r in enumerate(reports, 1):
+                    recurrence_note = (
+                        f"  🔁 _{r['recurrence_count'] + 1}th occurrence_"
+                        if r["recurrence_count"] > 0
+                        else ""
+                    )
+                    lines.append(
+                        f"*{i}.* `{r['column_name'] or 'unknown'}` · "
+                        f"{r['anomaly_type'].replace('_', ' ').title()} · "
+                        f"{r['rows_affected']} rows · "
+                        f"Confidence {int(r['confidence'] * 100)}% · "
+                        f"{r['created_at'][:10]}"
+                        f"{recurrence_note}"
+                    )
+
+                return "\n".join(lines)
+
+        except Exception as e:
+            logger.error(f"[SlackListener] fetch_table_history failed: {e}")
+            return f"⚠️ Error fetching history for `{table_name}`: {e}"
 
     async def _fetch_proposal(self, proposal_id: str) -> dict | None:
         """

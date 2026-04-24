@@ -19,7 +19,7 @@ import httpx
 from groq import AsyncGroq
 from slack_bolt.async_app import AsyncApp
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
-
+from slack_bot.blocks import proposal_card, resolved_card, rejection_modal, _utc_now
 from slack_bot.blocks import proposal_card, resolved_card, rejection_modal
 from slack_bot.config import slack_settings
 from slack_bot.qa_engine import (
@@ -75,17 +75,15 @@ async def _poll_for_completion(
     channel: str,
     ts: str,
     table_name: str,
+    table_fqn: str,
     rows_affected: int,
     decided_by: str,
     dry_run: bool,
+    confidence: float = 0.0,
+    sandbox_passed: bool = True,
     max_attempts: int = 12,
     interval_seconds: int = 3,
 ):
-    """
-    Background task: polls GET /audit until the fix appears,
-    then updates the Slack card to the final resolved state.
-    Non-blocking — runs as asyncio.create_task().
-    """
     from slack_sdk.web.async_client import AsyncWebClient
     slack = AsyncWebClient(token=slack_settings.slack_bot_token)
 
@@ -99,28 +97,60 @@ async def _poll_for_completion(
             (e for e in data.get("entries", []) if e.get("event_id") == event_id),
             None,
         )
-        if match:
-            action      = match.get("action", "applied")
-            outcome     = "completed" if action in ("applied", "dry_run") else "failed"
-            actual_rows = match.get("rows_affected", rows_affected)
-            actual_dry  = match.get("dry_run", dry_run)
+        if not match:
+            continue
 
-            await slack.chat_update(
-                channel=channel,
-                ts=ts,
-                text=f"✅ Fix {action} for `{table_name}`",
-                blocks=resolved_card(
-                    table_name=table_name,
-                    outcome=outcome,
-                    rows_affected=actual_rows,
-                    decided_by=decided_by,
-                    dry_run=actual_dry,
-                ),
-            )
-            logger.info(f"[Bot] Card resolved for proposal={proposal_id} action={action}")
-            return
+        action      = match.get("action", "applied")
+        outcome     = "completed" if action in ("applied", "dry_run") else "failed"
+        actual_rows = match.get("rows_affected", rows_affected)
+        actual_dry  = match.get("dry_run", dry_run)
 
-    # Timeout — tell user to check audit log
+        # Build documentation links
+        base_frontend = slack_settings.aegisdb_base_url.replace("8001", "3000")
+        base_om       = slack_settings.aegisdb_base_url.replace("8001", "8585")
+
+        audit_url    = f"{base_frontend}/audit/{event_id}"
+        incident_url = f"{base_frontend}/incidents"
+        om_url       = f"{base_om}/table/{table_fqn.replace('.', '%2E')}" if table_fqn else None
+
+        # Find report_id for this event
+        report_id = None
+        if action == "applied":
+            reports_data = await _api_get(f"/reports?limit=5&table_name={table_name}")
+            if reports_data:
+                for r in reports_data.get("reports", []):
+                    if r.get("event_id") == event_id:
+                        report_id = r.get("report_id")
+                        break
+                if not report_id and reports_data.get("reports"):
+                    report_id = reports_data["reports"][0].get("report_id")
+
+        if not report_id:
+            incident_url = None
+
+        await slack.chat_update(
+            channel=channel,
+            ts=ts,
+            text=f"{'✅' if outcome == 'completed' else '💥'} Fix {action} for `{table_name}`",
+            blocks=resolved_card(
+                table_name=table_name,
+                outcome=outcome,
+                rows_affected=actual_rows,
+                decided_by=decided_by,
+                dry_run=actual_dry,
+                confidence=confidence,
+                sandbox_passed=sandbox_passed,
+                incident_url=incident_url,
+                audit_url=audit_url,
+                om_url=om_url,
+            ),
+        )
+        logger.info(
+            f"[Bot] Card resolved for proposal={proposal_id} action={action}"
+        )
+        return
+
+    # Timeout fallback
     await slack.chat_update(
         channel=channel,
         ts=ts,
@@ -133,7 +163,6 @@ async def _poll_for_completion(
         ),
     )
     logger.warning(f"[Bot] Polling timed out for proposal={proposal_id}")
-
 
 # ── Phase 1: Button — Approve ─────────────────────────────────────────────────
 
@@ -196,14 +225,17 @@ async def handle_approve(ack, body, client, action):
     # Background: poll audit and update to final state
     asyncio.create_task(
         _poll_for_completion(
-            proposal_id=proposal_id,
-            event_id=event_id,
-            channel=msg_chan,
-            ts=msg_ts,
-            table_name=table_name,
-            rows_affected=rows_affected,
-            decided_by=user,
-            dry_run=dry_run,
+            proposal_id   = proposal_id,
+            event_id      = event_id,
+            channel       = msg_chan,
+            ts            = msg_ts,
+            table_name    = table_name,
+            table_fqn     = proposal.get("table_fqn", ""),
+            rows_affected = rows_affected,
+            decided_by    = user,
+            dry_run       = dry_run,
+            confidence    = proposal.get("confidence", 0.0),
+            sandbox_passed= proposal.get("sandbox_passed", True),
         )
     )
     logger.info(f"[Bot] Approve triggered proposal={proposal_id} by {user}")

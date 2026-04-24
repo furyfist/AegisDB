@@ -459,3 +459,41 @@ class RepairProposalRecord(BaseModel):
     # Full serialized objects for pipeline re-entry on approval
     diagnosis_json:     str = ""   # serialized DiagnosisResult
     event_json:         str = ""   # serialized EnrichedFailureEvent
+
+# ── Auto-Documentation — Fix Report 
+
+class FixType(str, Enum):
+    UPDATE = "update"
+    DELETE = "delete"
+    INSERT = "insert"
+    OTHER  = "other"
+
+
+class FixReport(BaseModel):
+    """
+    Canonical structured record written after every successful production apply.
+    Single source of truth for all documentation renderers:
+      - Incidents page (frontend)
+      - OpenMetadata column annotation
+      - Slack resolved card enrichment
+      - Markdown download endpoint
+    """
+    report_id:          str = Field(default_factory=lambda: str(uuid.uuid4()))
+    event_id:           str                        # FK → _aegisdb_audit.event_id
+    table_fqn:          str
+    table_name:         str
+    column_name:        str                        # primary column fixed
+    anomaly_type:       str                        # e.g. "null_violation"
+    anomaly_severity:   str                        # low / medium / high / critical
+    fix_type:           FixType = FixType.OTHER
+    fix_sql:            str
+    rows_affected:      int = 0
+    confidence:         float = 0.0
+    sandbox_passed:     bool = False
+    post_apply_passed:  bool = False
+    assertions_passed:  int = 0                    # X out of Y
+    assertions_total:   int = 0
+    recurrence_count:   int = 0                    # how many times this col+type seen before
+    downstream_tables:  list[str] = []             # from OM enrichment if available
+    approver:           str = "human"              # "human" or "auto"
+    created_at:         datetime = Field(default_factory=datetime.now)

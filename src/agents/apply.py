@@ -6,7 +6,7 @@ from datetime import datetime
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
-
+from src.services.om_client import om_client
 from src.core.config import settings
 from src.core.models import (
     RepairDecision,
@@ -19,6 +19,14 @@ from src.core.models import (
 )
 from src.db.audit_log import write_audit
 from src.sandbox.validator import run_assertions
+
+from src.db.reports_store import (
+    write_report,
+    extract_fix_type,
+    extract_primary_column,
+    get_recurrence_count,
+)
+from src.core.models import FixReport
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +194,7 @@ class ApplyAgent:
             table_fqn=decision.table_fqn,
             action=ApplyAction.DRY_RUN,
             rows_affected=audit_entry.rows_affected,
-            post_apply_passed=True,  # trivially true — nothing ran
+            post_apply_passed=True,
             audit_id=audit_id,
         )
 
@@ -316,6 +324,69 @@ class ApplyAgent:
             error=error_msg,
         )
         audit_id = await write_audit(audit_entry)
+
+        # ── Auto-documentation: only on successful production apply 
+        if action == ApplyAction.APPLIED:
+            try:
+                col_name    = extract_primary_column(fix_sql)
+                anomaly_type = categories[0].lower() if categories else "unknown"
+                recurrence  = await get_recurrence_count(
+                    table_name, col_name, anomaly_type
+                )
+                assertions_passed = sum(
+                    1 for a in post_assertions if a.passed
+                )
+                downstream = []
+                try:
+                    diag = json.loads(decision.diagnosis_result_json)
+                    downstream = (
+                        diag.get("table_context", {})
+                           .get("downstream_tables", [])
+                        if isinstance(diag.get("table_context"), dict)
+                        else []
+                    )
+                except Exception:
+                    downstream = []
+
+                fix_report = FixReport(
+                    event_id          = decision.event_id,
+                    table_fqn         = decision.table_fqn,
+                    table_name        = table_name,
+                    column_name       = col_name,
+                    anomaly_type      = anomaly_type,
+                    anomaly_severity  = audit_entry.failure_categories[1]
+                                       if len(audit_entry.failure_categories) > 1
+                                       else "low",
+                    fix_type          = extract_fix_type(fix_sql),
+                    fix_sql           = fix_sql,
+                    rows_affected     = rows_affected,
+                    confidence        = confidence,
+                    sandbox_passed    = decision.sandbox_result.sandbox_passed,
+                    post_apply_passed = True,
+                    assertions_passed = assertions_passed,
+                    assertions_total  = len(post_assertions),
+                    recurrence_count  = recurrence,
+                    downstream_tables = downstream,
+                    approver          = "human",
+                )
+                await write_report(fix_report)
+                # ── OM annotation — best-effort, never blocks pipeline 
+                await om_client.annotate_fix(
+                    table_fqn        = decision.table_fqn,
+                    column_name      = col_name,
+                    anomaly_type     = anomaly_type,
+                    rows_affected    = rows_affected,
+                    confidence       = confidence,
+                    recurrence_count = recurrence,
+                    fix_type         = fix_report.fix_type.value,
+                    event_id         = decision.event_id,
+                )
+
+            except Exception as e:
+                # Never block the pipeline — report write is best-effort
+                logger.error(
+                    f"[ApplyAgent] write_report failed (non-critical): {e}"
+                )
 
         return ApplyResult(
             event_id=decision.event_id,

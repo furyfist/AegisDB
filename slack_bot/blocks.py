@@ -1,4 +1,3 @@
-# slack_bot/blocks.py
 """
 Block Kit builders for AegisDB Slack cards.
 
@@ -427,7 +426,6 @@ def proposal_card(
 
     return blocks
 
-
 def resolved_card(
     table_name: str,
     outcome: str,           # "completed" | "approved" | "rejected" | "failed"
@@ -438,20 +436,53 @@ def resolved_card(
     confidence: float = 0.0,
     sandbox_passed: bool = True,
     applied_at: str = "",
+    # Phase 3 — documentation links (all optional, never break existing callers)
+    incident_url: str | None = None,
+    audit_url: str | None = None,
+    om_url: str | None = None,
 ) -> list[dict]:
     """
     V3: Final card state rendered as a receipt with fields grid.
+    V4 (Phase 3): Adds documentation links to completed outcome.
     Each outcome (completed, executing, rejected, failed) has a distinct
-    visual treatment — not just different text in the same layout.
+    visual treatment.
     """
     now      = applied_at or _utc_now()
     mode_str = "DRY RUN 🟡" if dry_run else "LIVE 🟢"
     conf_str = f"{int(confidence * 100)}%" if confidence > 0 else "N/A"
     sbox_str = "✅ Passed" if sandbox_passed else "❌ Failed"
 
+    def _links_block(
+        incident_url: str | None,
+        audit_url: str | None,
+        om_url: str | None,
+    ) -> list[dict]:
+        """
+        Build a context block with documentation links.
+        Only renders links that are actually provided — never shows broken links.
+        """
+        parts = []
+        if incident_url:
+            parts.append(f"<{incident_url}|📋 Incident Report>")
+        if audit_url:
+            parts.append(f"<{audit_url}|🔍 Audit Entry>")
+        if om_url:
+            parts.append(f"<{om_url}|📖 OpenMetadata>")
+
+        if not parts:
+            return []
+
+        return [{
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": "  ·  ".join(parts),
+            }],
+        }]
+
     # ── completed (fix applied) ───────────────────────────────────────────
     if outcome == "completed":
-        return [
+        blocks = [
             {
                 "type": "header",
                 "text": {
@@ -475,14 +506,17 @@ def resolved_card(
                 "type": "context",
                 "elements": [{
                     "type": "mrkdwn",
-                    "text": "Post-apply verification passed · Rollback SQL preserved",
+                    "text": "Post-apply verification passed · Rollback SQL preserved · Knowledge base updated",
                 }],
             },
         ]
+        # Add documentation links if any provided
+        blocks.extend(_links_block(incident_url, audit_url, om_url))
+        return blocks
 
     # ── approved / executing ──────────────────────────────────────────────
     if outcome == "approved":
-        return [
+        blocks = [
             {
                 "type": "header",
                 "text": {
@@ -508,6 +542,7 @@ def resolved_card(
                 }],
             },
         ]
+        return blocks
 
     # ── rejected ──────────────────────────────────────────────────────────
     if outcome == "rejected":
@@ -546,11 +581,13 @@ def resolved_card(
                 ),
             }],
         })
+        # Audit link still useful even for rejections
+        blocks.extend(_links_block(None, audit_url, om_url))
         return blocks
 
     # ── failed ────────────────────────────────────────────────────────────
     if outcome == "failed":
-        return [
+        blocks = [
             {
                 "type": "header",
                 "text": {
@@ -587,6 +624,8 @@ def resolved_card(
                 }],
             },
         ]
+        blocks.extend(_links_block(None, audit_url, None))
+        return blocks
 
     # ── fallback (unknown outcome) ────────────────────────────────────────
     return [
@@ -598,7 +637,6 @@ def resolved_card(
             },
         },
     ]
-
 
 def rejection_modal(proposal_id: str, table_name: str) -> dict:
     """

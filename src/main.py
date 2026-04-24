@@ -28,6 +28,7 @@ from src.db.connection_registry import (
     init_connection_registry,
     close_connection_registry,
 )
+from src.db.reports_store import init_reports_store, close_reports_store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +71,16 @@ async def lifespan(app: FastAPI):
         logger.info("[Boot] ChromaDB ready")
     except Exception as e:
         logger.error(f"[Boot] ChromaDB FAILED: {e}")
+
+    #  1b. OpenMetadata tag bootstrap 
+    try:
+        tag_ready = await om_client.ensure_aegisdb_tag()
+        if tag_ready:
+            logger.info("[Boot] OM AegisDB.healed tag ready")
+        else:
+            logger.warning("[Boot] OM tag bootstrap skipped (OM may be unavailable)")
+    except Exception as e:
+        logger.warning(f"[Boot] OM tag bootstrap failed (non-fatal): {e}")
 
     #  2. Audit table in target DB 
     try:
@@ -148,6 +159,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[Boot] Proposal store unavailable: {e}")
 
+    # ── 2f. Reports store (auto-documentation) 
+    try:
+        await init_reports_store()
+        logger.info("[Boot] Reports store ready")
+    except Exception as e:
+        logger.warning(f"[Boot] Reports store unavailable (non-fatal): {e}")
+
     logger.info("AegisDB ready ✓")
     logger.info(f"  Webhook  → http://localhost:{settings.app_port}/api/v1/webhook/om-test-failure")
     logger.info(f"  Audit    → http://localhost:{settings.app_port}/api/v1/audit")
@@ -187,6 +205,7 @@ async def lifespan(app: FastAPI):
     await close_connection_registry()
     await close_proposal_store()
     await close_audit()
+    await close_reports_store()
 
     logger.info("AegisDB shutdown complete")
 
