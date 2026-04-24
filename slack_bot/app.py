@@ -329,7 +329,8 @@ async def handle_rejection_submit(ack, body, client, view):
 # ── Phase 2: In-thread Q&A ────────────────────────────────────────────────────
 
 @app.event("message")
-async def handle_thread_message(event, client):
+async def handle_thread_message(event, client, logger):
+    logger.info(f"[QA] message event received: subtype={event.get('subtype')} thread_ts={event.get('thread_ts')} bot_id={event.get('bot_id')}")
     """
     Fires on every message event. Acts only when:
       1. Message is in a thread (thread_ts present)
