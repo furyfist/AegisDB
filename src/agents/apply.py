@@ -6,7 +6,7 @@ from datetime import datetime
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
-
+from src.services.om_client import om_client
 from src.core.config import settings
 from src.core.models import (
     RepairDecision,
@@ -234,6 +234,18 @@ class ApplyAgent:
                     approver          = "human",
                 )
                 await write_report(fix_report)
+                # ── OM annotation — best-effort, never blocks pipeline 
+                await om_client.annotate_fix(
+                    table_fqn        = decision.table_fqn,
+                    column_name      = col_name,
+                    anomaly_type     = anomaly_type,
+                    rows_affected    = rows_affected,
+                    confidence       = confidence,
+                    recurrence_count = recurrence,
+                    fix_type         = fix_report.fix_type.value,
+                    event_id         = decision.event_id,
+                )
+
             except Exception as e:
                 # Never block the pipeline — report write is best-effort
                 logger.error(
