@@ -231,6 +231,12 @@ class StreamConsumer:
         from src.db.proposal_store import create_proposal
         try:
             await create_proposal(proposal)
+            # ── Slack notification (non-fatal if bot not running) ──
+            try:
+                from slack_bot.slack_notifier import notify_proposal
+                await notify_proposal(proposal)
+            except Exception as slack_err:
+                logger.warning(f"[Router] Slack notify skipped: {slack_err}")
         except Exception as e:
             logger.error(f"[Router] Proposal save failed: {e}")
 

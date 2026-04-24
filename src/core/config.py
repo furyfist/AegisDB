@@ -66,4 +66,10 @@ class Settings(BaseSettings):
     apply_statement_timeout_ms: int = 30000
     post_apply_verify: bool = True
 
+    # Slack Bot
+    slack_bot_token: str = ""
+    slack_app_token: str = ""
+    slack_ops_channel: str = "aegis-ops"
+    aegisdb_base_url: str = "http://localhost:8001"
+    
 settings = Settings()

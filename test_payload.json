@@ -1,0 +1,14 @@
+{
+  "eventType": "entityUpdated",
+  "entityType": "testCase",
+  "entityFQN": "northwind_svc.northwind.public.orders.ship_region.orders_ship_region_not_null",
+  "entity": {
+    "name": "orders_ship_region_not_null",
+    "fullyQualifiedName": "northwind_svc.northwind.public.orders.ship_region.orders_ship_region_not_null",
+    "testCaseResult": {
+      "testCaseStatus": "Failed",
+      "result": "Found 301 null values in column ship_region"
+    }
+  },
+  "timestamp": 1712345678000
+}
