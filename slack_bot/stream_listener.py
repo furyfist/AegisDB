@@ -348,44 +348,45 @@ class SlackStreamListener:
         Replaces the previous _poll_for_completion pattern.
         Runs as a fire-and-forget task — never blocks the listener loop.
         """
-        event_id   = ""
-        report_id  = None
-
         for attempt in range(max_polls):
             await asyncio.sleep(poll_interval)
             try:
                 async with httpx.AsyncClient(timeout=8.0) as client:
-                    # Poll audit for this proposal's event
-                    mapping = proposal_message_map.get(proposal_id, {})
-                    event_id = mapping.get("event_id", "")
-
-                    if not event_id:
-                        continue
-
-                    # Check audit entry
-                    audit_resp = await client.get(
-                        f"{slack_settings.aegisdb_base_url}/api/v1/audit/{event_id}"
+                    # Poll the proposal directly — more reliable than audit lookup
+                    proposal_resp = await client.get(
+                        f"{slack_settings.aegisdb_base_url}/api/v1/proposals/{proposal_id}"
                     )
-                    if audit_resp.status_code != 200:
+                    if proposal_resp.status_code != 200:
                         continue
 
-                    audit = audit_resp.json()
-                    action = audit.get("action", "")
+                    proposal = proposal_resp.json()
+                    status = proposal.get("status", "")
 
-                    if action not in ("applied", "rolled_back", "failed"):
-                        # Still executing
+                    if status not in ("completed", "failed"):
+                        # Still executing or pending
                         continue
 
-                    # Fix is done — check if a report was generated
+                    # Get the real event_id from the proposal
+                    event_id = proposal.get("event_id", "")
+
+                    # Check audit for the real action
+                    action = "applied"
+                    if event_id:
+                        audit_resp = await client.get(
+                            f"{slack_settings.aegisdb_base_url}/api/v1/audit/{event_id}"
+                        )
+                        if audit_resp.status_code == 200:
+                            action = audit_resp.json().get("action", "applied")
+
+                    # Check if a report was generated
+                    report_id = None
                     if action == "applied":
                         reports_resp = await client.get(
                             f"{slack_settings.aegisdb_base_url}/api/v1/reports",
-                            params={"limit": 5, "table_name": audit.get("table_name", "")},
+                            params={"limit": 5, "table_name": proposal.get("table_name", "")},
                         )
                         if reports_resp.status_code == 200:
-                            reports_data = reports_resp.json()
-                            reports = reports_data.get("reports", [])
-                            # Most recent report for this event
+                            reports = reports_resp.json().get("reports", [])
                             for r in reports:
                                 if r.get("event_id") == event_id:
                                     report_id = r.get("report_id")
@@ -396,13 +397,8 @@ class SlackStreamListener:
                     # Build links
                     links = self._build_doc_links(event_id, report_id, table_fqn)
 
-                    # Map action → outcome
-                    outcome_map = {
-                        "applied":      "completed",
-                        "rolled_back":  "failed",
-                        "failed":       "failed",
-                    }
-                    outcome = outcome_map.get(action, "failed")
+                    # Map status → outcome
+                    outcome = "completed" if action == "applied" else "failed"
 
                     # Update the Slack card
                     await self._slack.chat_update(
@@ -417,7 +413,7 @@ class SlackStreamListener:
                             dry_run=dry_run,
                             confidence=confidence,
                             sandbox_passed=sandbox_passed,
-                            applied_at=audit.get("applied_at", ""),
+                            applied_at=proposal.get("decided_at", ""),
                             incident_url=links["incident_url"],
                             audit_url=links["audit_url"],
                             om_url=links["om_url"],
@@ -427,7 +423,7 @@ class SlackStreamListener:
                         f"[SlackListener] Resolved card updated for proposal={proposal_id} "
                         f"outcome={outcome} links={links}"
                     )
-                    return  # done — exit poll loop
+                    return
 
             except Exception as e:
                 logger.warning(
