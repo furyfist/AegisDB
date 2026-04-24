@@ -72,6 +72,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"[Boot] ChromaDB FAILED: {e}")
 
+    #  1b. OpenMetadata tag bootstrap 
+    try:
+        tag_ready = await om_client.ensure_aegisdb_tag()
+        if tag_ready:
+            logger.info("[Boot] OM AegisDB.healed tag ready")
+        else:
+            logger.warning("[Boot] OM tag bootstrap skipped (OM may be unavailable)")
+    except Exception as e:
+        logger.warning(f"[Boot] OM tag bootstrap failed (non-fatal): {e}")
+
     #  2. Audit table in target DB 
     try:
         await init_audit_table()
@@ -196,7 +206,7 @@ async def lifespan(app: FastAPI):
     await close_proposal_store()
     await close_audit()
     await close_reports_store()
-    
+
     logger.info("AegisDB shutdown complete")
 
 
