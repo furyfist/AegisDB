@@ -5,7 +5,9 @@
 
 ---
 
-<!-- SCREENSHOT: Hero / dashboard overview — full-width screenshot of the main dashboard showing pipeline health, audit log, and stream counts -->
+### Dashboard Overview
+![AegisDB Dashboard](./assets/hero_section.png)
+
 
 ---
 
@@ -47,7 +49,9 @@ No tickets. No tribal knowledge lost. Every table AegisDB has ever touched becom
 
 ## Architecture
 
-<!-- DIAGRAM: System architecture diagram — insert image here. Should show: OpenMetadata → Webhook → FastAPI → Redis Streams → Diagnosis Agent (Gemini) → ChromaDB → Proposal → Human Approval → Repair Agent → Apply Agent → Postgres Production. Also show Slack Bot as a parallel process connected via Redis. -->
+### System Architecture
+![AegisDB Architecture](./assets/architecture.svg)
+
 
 ### Pipeline at a Glance
 
@@ -337,44 +341,45 @@ rm -rf ./data/chromadb/
 
 ## End-to-End Pipeline Walkthrough
 
-<!-- SCREENSHOT: Step 1 — OpenMetadata test failure event in the OM UI -->
 
 **Step 1 — Failure detected**
+![Pipeline Health](./assets/dashboard.png)
+
 OpenMetadata runs a data quality test and finds a NULL violation in `employees.region`. It fires a webhook to AegisDB at `POST /webhook/om-test-failure`. AegisDB returns 200 immediately and processes the event in the background.
 
 ---
 
-<!-- SCREENSHOT: Step 2 — Dashboard showing the event being processed, stream counts updating -->
 
 **Step 2 — Classify and diagnose**
 The detector classifies the failure as `NULL_VIOLATION` with severity `low`. The diagnosis agent queries ChromaDB for similar past fixes (RAG), builds a prompt with full table schema context, and calls Gemini 2.5 Pro. It returns a `DiagnosisResult` with a confidence score, root cause in plain English, a fix SQL, and rollback SQL.
 
 ---
 
-<!-- SCREENSHOT: Step 3 — Proposals page showing a pending proposal card with confidence score, failure category, and affected row count -->
+
 
 **Step 3 — Sandbox preview and proposal**
+![Review Proposal](./assets/proposals.png)
+
 If confidence ≥ 0.70, AegisDB spins up an ephemeral Postgres container, seeds it with up to 500 rows from the target table, runs the fix, validates assertions, and captures a before/after data diff. A proposal is created in `pending_approval` status.
 
 ---
 
-<!-- SCREENSHOT: Step 4 — Proposal detail modal showing the data diff table, fix SQL, confidence score, root cause, and approve/reject buttons -->
 
 **Step 4 — Human review**
 The proposal appears in the web UI (and Slack). The operator reviews: the plain-English root cause, the exact SQL that will run, a diff of affected rows, confidence score, and rollback SQL. They click Approve or Reject.
 
 ---
 
-<!-- SCREENSHOT: Step 5 — Slack card showing the anomaly progressing from "detecting" to "proposal ready" to "resolved" -->
 
 **Step 5 — Apply to production**
 On approval, the repair agent re-validates in a fresh sandbox (up to 3 retries). On pass, the apply agent executes the fix inside a Postgres transaction with a 30-second statement timeout. Post-apply assertions run. On pass → COMMIT. On fail → ROLLBACK → escalation.
 
 ---
 
-<!-- SCREENSHOT: Step 6 — Audit log entry expanded, showing fix SQL, post-apply assertions checklist, rows affected -->
 
 **Step 6 — Audit and documentation**
+![Audit Log Entry](./assets/Audit-log.png)
+
 The audit log records every detail: the SQL that ran, rows affected, assertion results, confidence score, and whether it was a dry run. The fixed column's description in OpenMetadata is annotated. The Slack card updates with links to the incident timeline and audit entry.
 
 ---
@@ -460,7 +465,9 @@ Full API specification → [`docs/ARCHITECTURE.md § API Reference`](docs/ARCHIT
 
 ## Slack Setup
 
-<!-- SCREENSHOT: Slack anomaly card — showing the full card with anomaly details, confidence, approve/reject buttons, and thread Q&A -->
+### Slack Anomaly Card
+![Slack Integration](./assets/incident.png)
+
 
 1. Create a Slack app at `https://api.slack.com/apps`
 2. Enable **Socket Mode** — generates an App-Level Token (`xapp-...`)
@@ -475,13 +482,19 @@ The bot connects via Socket Mode — no public URL or ngrok required.
 
 ## Frontend Screenshots
 
-<!-- SCREENSHOT: Connections page — showing a connected database card with health score, dirty/clean status badge -->
+### Database Connections
+![Connections Page](./assets/connections.png)
 
-<!-- SCREENSHOT: Live table viewer — showing the data table with anomaly-highlighted cells (amber background), NULL pills, column type badges -->
 
-<!-- SCREENSHOT: Profiling report — showing anomaly list with severity badges, affected row counts, and per-table breakdown -->
+### Incident Timeline
+![Incident History](./assets/incident.png)
 
-<!-- SCREENSHOT: Diagnostic tool — showing the 13-check health panel at /diagnostic -->
+
+### Data Profiling Report
+![Profiling Report](./assets/profilling.png)
+
+
+
 
 ---
 
