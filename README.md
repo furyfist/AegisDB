@@ -465,8 +465,21 @@ Full API specification → [`docs/ARCHITECTURE.md § API Reference`](docs/ARCHIT
 
 ## Slack Setup
 
-### Slack Anomaly Card
-![Slack Integration](./assets/incident.png)
+### Conversational Incident Management
+
+AegisDB isn't just a notification bot — it's a conversational SRE embedded in your workspace.
+
+#### 1. Interactive Anomaly Cards
+![Slack Proposal Card](./assets/slack_proposal.png)
+*Receive detailed anomaly cards with data diffs, confidence scores, and one-click approval buttons directly in Slack.*
+
+#### 2. Conversational Q&A (RAG)
+![Slack Thread Q&A](./assets/slack_BotQuery.png)
+*Ask questions in the incident thread. The bot uses Gemini 2.5 Pro and the ChromaDB RAG store to explain why a fix is safe or how it compares to past incidents.*
+
+#### 3. Automated Resolution Receipts
+![Slack Resolution Receipt](./assets/slack_DBfixed.png)
+*Upon approval, cards update in real-time to provide a receipt of the fix, including exact rows healed and a link to the audit trail.*
 
 
 1. Create a Slack app at `https://api.slack.com/apps`
