@@ -3,7 +3,7 @@
 > **Autonomous database health monitoring and self-healing system.**  
 > AegisDB detects data quality failures, diagnoses root cause using AI, proposes fixes for human review, and applies them to production — safely, with a full audit trail.
 
-**Frontend:** [furyfist/aegisdb-frontend](https://github.com/furyfist/aegisdb-frontend)
+**Frontend:** [furyfist/aegisdb-frontend](https://github.com/furyfist/aegisdb-frontend) &nbsp;|&nbsp; **Demo:** [Watch on YouTube](https://www.youtube.com/watch?v=H3tvkptnSZ4)
 
 ---
 
