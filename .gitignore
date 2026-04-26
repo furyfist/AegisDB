@@ -5,3 +5,4 @@ __pycache__/
 docker/openmetadata/openmetadata.env
 docker/openmetadata/docker-volume/
 openmetadata.env
+.env.railway

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # Redis
     redis_host: str = "localhost"
     redis_port: int = 6379
+    redis_password: str = ""
     redis_stream_name: str = "aegisdb:events"
     redis_repair_stream: str = "aegisdb:repair"
     redis_escalation_stream: str = "aegisdb:escalation"
