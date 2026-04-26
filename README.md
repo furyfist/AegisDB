@@ -3,6 +3,8 @@
 > **Autonomous database health monitoring and self-healing system.**  
 > AegisDB detects data quality failures, diagnoses root cause using AI, proposes fixes for human review, and applies them to production — safely, with a full audit trail.
 
+**Frontend:** [furyfist/aegisdb-frontend](https://github.com/furyfist/aegisdb-frontend)
+
 ---
 
 ### Dashboard Overview
@@ -36,7 +38,7 @@ Production databases silently accumulate data quality failures. A NULL in a crit
 AegisDB closes the loop automatically:
 
 1. OpenMetadata fires a webhook when a test fails
-2. AegisDB classifies the failure, diagnoses the root cause with **Gemini 2.5 Pro** and a RAG knowledge base
+2. AegisDB classifies the failure, diagnoses the root cause with **Groq LLM** and a RAG knowledge base
 3. It sandbox-tests a fix in an ephemeral Postgres container
 4. A human approves or rejects the proposed fix via Slack or the web UI
 5. On approval, AegisDB applies the fix to production inside a transaction with post-apply assertions
@@ -62,7 +64,7 @@ OpenMetadata (test failure)
   FastAPI Webhook
         │  background task
         ▼
-  Detector → Diagnosis (Gemini 2.5 Pro + ChromaDB RAG)
+  Detector → Diagnosis (Groq LLM + ChromaDB RAG)
         │
         ├── low confidence → Escalation Stream
         │
@@ -92,7 +94,7 @@ All inter-agent communication flows through **Redis Streams** — no direct agen
 Every fix is sandbox-tested in an ephemeral Postgres container before a human ever sees the proposal. Production applies run inside an explicit transaction with post-apply SQL assertions. Automatic rollback on assertion failure.
 
 **AI-powered diagnosis**
-Gemini 2.5 Pro diagnoses root cause with full table schema context. ChromaDB provides RAG from past fixes — the system gets smarter with every approval.
+Groq LLM diagnoses root cause with full table schema context. ChromaDB provides RAG from past fixes — the system gets smarter with every approval.
 
 **Human-in-the-loop**
 No fix reaches production without explicit human approval. Proposals include a data diff (before/after rows), confidence score, rollback SQL, and a plain-English explanation.
@@ -122,7 +124,7 @@ Direct Postgres profiler that detects NULL violations, uniqueness violations, ra
 |---|---|
 | Framework | FastAPI 0.115.0 + Uvicorn |
 | Language | Python 3.12 |
-| LLM | Google Gemini 2.5 Pro (`google-generativeai`) |
+| LLM | Groq (`groq`) |
 | Vector store | ChromaDB 0.5.0 + `all-MiniLM-L6-v2` embeddings |
 | Message broker | Redis Streams (redis-py 5.0.7) |
 | Target DB driver | asyncpg 0.30.0 (async) + SQLAlchemy 2.0 |
@@ -147,7 +149,7 @@ Direct Postgres profiler that detects NULL violations, uniqueness violations, ra
 - **Docker** and **Docker Compose** (for OpenMetadata, Postgres, Redis)
 - **Python 3.12**
 - **Node.js 18+** (for frontend)
-- **Google Gemini API key** — [get one here](https://aistudio.google.com/app/apikey)
+- **Groq API key** — [get one here](https://console.groq.com/keys)
 - 8 GB RAM minimum (OpenMetadata stack is heavy)
 
 ---
@@ -170,7 +172,7 @@ cp .env.example .env
 Edit `.env` — at minimum set:
 
 ```env
-GEMINI_API_KEY=your_key_here
+GROQ_API_KEY=your_key_here
 OM_ADMIN_PASSWORD=your_om_password
 TARGET_DB_PASSWORD=aegisdb_pass
 ```
@@ -238,8 +240,8 @@ Create a `.env` file in the project root. A `.env.example` is provided.
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `GEMINI_API_KEY` | — | ✅ | Google Gemini API key |
-| `LLM_MODEL` | `gemini-2.5-pro` | | Gemini model name |
+| `GROQ_API_KEY` | — | ✅ | Groq API key |
+| `LLM_MODEL` | `llama-3.3-70b-versatile` | | Groq model name |
 | `LLM_MAX_TOKENS` | `4096` | | Max tokens per LLM call |
 | `OM_HOST` | `http://localhost:8585` | ✅ | OpenMetadata server URL |
 | `OM_ADMIN_EMAIL` | `admin@open-metadata.org` | ✅ | |
@@ -351,7 +353,7 @@ OpenMetadata runs a data quality test and finds a NULL violation in `employees.r
 
 
 **Step 2 — Classify and diagnose**
-The detector classifies the failure as `NULL_VIOLATION` with severity `low`. The diagnosis agent queries ChromaDB for similar past fixes (RAG), builds a prompt with full table schema context, and calls Gemini 2.5 Pro. It returns a `DiagnosisResult` with a confidence score, root cause in plain English, a fix SQL, and rollback SQL.
+The detector classifies the failure as `NULL_VIOLATION` with severity `low`. The diagnosis agent queries ChromaDB for similar past fixes (RAG), builds a prompt with full table schema context, and calls Groq LLM. It returns a `DiagnosisResult` with a confidence score, root cause in plain English, a fix SQL, and rollback SQL.
 
 ---
 
@@ -391,7 +393,7 @@ aegisdb/
 ├── src/
 │   ├── agents/
 │   │   ├── detector.py          # Rule-based failure classifier
-│   │   ├── diagnosis.py         # LLM diagnosis via Gemini 2.5 Pro
+│   │   ├── diagnosis.py         # LLM diagnosis via Groq
 │   │   ├── profiler.py          # Direct Postgres profiling engine
 │   │   ├── repair.py            # Sandbox orchestrator (post-approval)
 │   │   └── apply.py             # Production fix executor
@@ -475,7 +477,7 @@ AegisDB isn't just a notification bot — it's a conversational SRE embedded in 
 
 #### 2. Conversational Q&A (RAG)
 ![Slack Thread Q&A](./assets/slack_BotQuery.png)
-*Ask questions in the incident thread. The bot uses Gemini 2.5 Pro and the ChromaDB RAG store to explain why a fix is safe or how it compares to past incidents.*
+*Ask questions in the incident thread. The bot uses Groq LLM and the ChromaDB RAG store to explain why a fix is safe or how it compares to past incidents.*
 
 #### 3. Automated Resolution Receipts
 ![Slack Resolution Receipt](./assets/slack_DBfixed.png)
